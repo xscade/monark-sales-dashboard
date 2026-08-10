@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useOptimistic, useRef, useState, useTransition } from "react";
 import { createPortal } from "react-dom";
 import { GripVertical } from "lucide-react";
@@ -14,6 +15,7 @@ import {
   FOLLOW_UP_CHANNEL_LABELS,
   type FollowUpChannel,
 } from "@/lib/follow-ups";
+import { StageWorkflowDialog } from "@/components/stage-workflow-dialog";
 import { WORKFLOW_STAGE_HINT, isEditableStage } from "@/lib/stage-edit";
 
 export interface PipelineCard {
@@ -58,7 +60,7 @@ interface DragState {
   over: string | null;
 }
 
-type TargetState = "idle" | "ok" | "blocked";
+type TargetState = "idle" | "ok" | "workflow" | "blocked";
 
 /**
  * Past Contacted, a stage change without a next step is how deals go quiet.
@@ -83,7 +85,12 @@ export interface StageMoveDetails {
 
 function targetState(stage: string, card: PipelineCard | null): TargetState {
   if (!card || stage === card.stage) return "idle";
-  if (!isEditableStage(stage)) return "blocked";
+  // Distinct from "blocked": the drop is accepted, it just opens a short form
+  // first. Dimming these the way a genuinely impossible target is dimmed would
+  // keep telling people not to try the thing that now works.
+  if (!isEditableStage(stage)) {
+    return WORKFLOW_STAGE_HINT[stage as LeadStage] ? "workflow" : "blocked";
+  }
   return checkTransition(card.stage as LeadStage, stage as LeadStage).allowed ? "ok" : "blocked";
 }
 
@@ -100,11 +107,13 @@ export function PipelineBoard({
     cards,
     (current, move) => current.map((c) => (c.id === move.id ? { ...c, stage: move.toStage } : c)),
   );
+  const router = useRouter();
   const [isPending, startTransition] = useTransition();
   const [movingId, setMovingId] = useState<string | null>(null);
   const [drag, setDragState] = useState<DragState | null>(null);
   const [keyboardMove, setKeyboardMove] = useState<{ card: PipelineCard; target: string } | null>(null);
   const [prompt, setPrompt] = useState<{ card: PipelineCard; toStage: string } | null>(null);
+  const [workflow, setWorkflow] = useState<{ card: PipelineCard; toStage: string } | null>(null);
   const [mounted, setMounted] = useState(false);
 
   const boardRef = useRef<HTMLDivElement | null>(null);
@@ -126,7 +135,15 @@ export function PipelineBoard({
   }, [stages, optimisticCards]);
 
   /** Stages reachable with the keyboard, in board order. */
-  const keyboardTargets = useMemo<string[]>(() => stages.filter(isEditableStage), [stages]);
+  // Workflow stages are reachable by keyboard too now that dropping on one
+  // opens its form rather than refusing.
+  const keyboardTargets = useMemo<string[]>(
+    () =>
+      stages.filter(
+        (stage) => isEditableStage(stage) || Boolean(WORKFLOW_STAGE_HINT[stage as LeadStage]),
+      ),
+    [stages],
+  );
 
   const setDrag = useCallback((next: DragState | null) => {
     dragRef.current = next;
@@ -163,10 +180,12 @@ export function PipelineBoard({
   const attemptMove = useCallback(
     (card: PipelineCard, toStage: string) => {
       if (toStage === card.stage) return;
+      // Workflow-backed stages open their workflow instead of refusing. The
+      // rule has not changed — the visit or booking row still has to exist —
+      // but the board now asks for it rather than sending someone away.
       if (!isEditableStage(toStage)) {
-        toast.error(
-          WORKFLOW_STAGE_HINT[toStage as LeadStage] ?? "That stage is set by its own workflow",
-        );
+        if (WORKFLOW_STAGE_HINT[toStage as LeadStage]) setWorkflow({ card, toStage });
+        else toast.error("That stage is set by its own workflow");
         return;
       }
       const check = checkTransition(card.stage as LeadStage, toStage as LeadStage);
@@ -425,11 +444,13 @@ export function PipelineBoard({
               className={`w-72 shrink-0 rounded-xl transition ${
                 isOver && state === "ok"
                   ? "bg-brand-50/70 ring-2 ring-brand-500 dark:bg-brand-600/10"
-                  : isOver && state === "blocked"
-                    ? "bg-red-50/60 ring-2 ring-red-400 dark:bg-red-950/30"
-                    : heldCard && state === "blocked"
-                      ? "opacity-45"
-                      : ""
+                  : isOver && state === "workflow"
+                    ? "bg-amber-50/70 ring-2 ring-amber-400 dark:bg-amber-950/25"
+                    : isOver && state === "blocked"
+                      ? "bg-red-50/60 ring-2 ring-red-400 dark:bg-red-950/30"
+                      : heldCard && state === "blocked"
+                        ? "opacity-45"
+                        : ""
               }`}
             >
               <div className="mb-2 flex items-center justify-between px-1 pt-1">
@@ -442,7 +463,11 @@ export function PipelineBoard({
               <div className="min-h-52 space-y-2 px-1 pb-1">
                 {column.length === 0 ? (
                   <p className="rounded-lg border border-dashed border-zinc-200 px-3 py-6 text-center text-xs text-zinc-400 dark:border-zinc-800">
-                    {isOver && state === "ok" ? "Drop here" : "Empty"}
+                    {isOver && state === "ok"
+                      ? "Drop here"
+                      : isOver && state === "workflow"
+                        ? WORKFLOW_STAGE_HINT[stage as LeadStage]
+                        : "Empty"}
                   </p>
                 ) : (
                   column.slice(0, 50).map((card) => (
@@ -547,6 +572,22 @@ export function PipelineBoard({
           </div>,
           document.body,
         )}
+
+      {workflow && (
+        <StageWorkflowDialog
+          leadId={workflow.card.id}
+          leadName={workflow.card.name}
+          toStage={workflow.toStage}
+          onCancel={() => setWorkflow(null)}
+          onDone={(message) => {
+            setWorkflow(null);
+            toast.success(`${workflow.card.name} · ${message}`);
+            // The workflow moved the stage itself; pull the board back in line
+            // with what the database now says.
+            startTransition(() => router.refresh());
+          }}
+        />
+      )}
 
       {prompt && (
         <StageMoveDialog

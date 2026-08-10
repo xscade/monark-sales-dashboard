@@ -99,7 +99,7 @@ export default async function OverviewPage() {
             <Sparkles className="size-3 text-primary" />
             Live sales command centre
           </Badge>
-          <h1 className="text-2xl font-bold tracking-[-0.035em] sm:text-3xl">Good to see you, {firstName}.</h1>
+          <h2 className="text-2xl font-bold tracking-[-0.035em] sm:text-3xl">Good to see you, {firstName}.</h2>
           <p className="mt-1.5 max-w-2xl text-sm text-muted-foreground">
             Here is what needs attention today and how the last 30 days are converting.
           </p>

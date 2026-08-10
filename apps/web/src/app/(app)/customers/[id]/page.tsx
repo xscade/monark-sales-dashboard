@@ -98,7 +98,7 @@ export default async function CustomerDetailPage({
           <Link href="/customers" className="text-xs text-zinc-500 hover:underline">
             ← Customers
           </Link>
-          <h1 className="mt-1 text-xl font-semibold">{customer.fullName ?? "Unnamed customer"}</h1>
+          <h2 className="mt-1 text-xl font-semibold">{customer.fullName ?? "Unnamed customer"}</h2>
           <p className="tabular mt-0.5 text-sm text-zinc-500">
             {customer.primaryPhone ?? "No phone"}
             {customer.primaryEmail ? ` · ${customer.primaryEmail}` : ""}

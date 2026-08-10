@@ -43,7 +43,6 @@ export default async function CampaignsPage({
     <div className="space-y-5">
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
-          <h1 className="text-xl font-semibold">Campaign intelligence</h1>
           <p className="mt-0.5 text-sm text-zinc-500">Spend joined to real outcomes, last {days} days</p>
         </div>
         <form method="get">

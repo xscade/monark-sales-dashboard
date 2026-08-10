@@ -77,7 +77,6 @@ export default async function TasksPage({
     <div className="space-y-6">
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
-          <h1 className="text-xl font-semibold">Tasks</h1>
           <p className="mt-0.5 text-sm text-zinc-500">
             {tasks.length} {status === "completed" ? "completed" : "matching"} task
             {tasks.length === 1 ? "" : "s"}

@@ -35,7 +35,7 @@ export default async function SiteVisitsPage({ searchParams }: { searchParams: P
 
   return (
     <div className="space-y-6">
-      <div className="flex flex-col justify-between gap-3 sm:flex-row sm:items-end"><div><p className="text-xs font-semibold uppercase tracking-[0.16em] text-primary">Field operations</p><h1 className="mt-1 text-2xl font-bold tracking-tight">Site visits</h1><p className="mt-1 text-sm text-muted-foreground">Appointments, arrivals, outcomes and no-shows—kept as separate facts.</p></div>{writable && <Button asChild variant="outline"><Link href="/walk-ins/new"><Plus />Fresh walk-in</Link></Button>}</div>
+      <div className="flex flex-col justify-between gap-3 sm:flex-row sm:items-end"><div><p className="text-xs font-semibold uppercase tracking-[0.16em] text-primary">Field operations</p><p className="mt-1 text-sm text-muted-foreground">Appointments, arrivals, outcomes and no-shows—kept as separate facts.</p></div>{writable && <Button asChild variant="outline"><Link href="/walk-ins/new"><Plus />Fresh walk-in</Link></Button>}</div>
       <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_360px]">
         <div className="space-y-4">
           <div className="flex flex-wrap items-center gap-2">{(["today", "upcoming", "past"] as const).map((item) => <Button key={item} asChild size="sm" variant={range === item ? "default" : "outline"}><Link href={`/site-visits?range=${item}${status ? `&status=${status}` : ""}`} className="capitalize">{item}</Link></Button>)}</div>

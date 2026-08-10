@@ -27,7 +27,7 @@ export default async function WalkInLinksPage() {
       <div className="flex flex-col justify-between gap-3 sm:flex-row sm:items-end">
         <div>
           <p className="text-xs font-semibold uppercase tracking-[0.16em] text-primary">Field operations</p>
-          <h1 className="mt-1 text-2xl font-bold tracking-tight">Walk-in links</h1>
+          <h2 className="mt-1 text-2xl font-bold tracking-tight">Walk-in links</h2>
           <p className="mt-1 text-sm text-muted-foreground">
             Passcode-gated forms a visitor can fill in themselves. Every check-in keeps the channel
             it came from, so brokers and site QRs stop being indistinguishable from each other.

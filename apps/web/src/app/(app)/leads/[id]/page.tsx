@@ -128,7 +128,7 @@ export default async function LeadDetailPage({ params }: { params: Promise<{ id:
           <Link href="/leads" className="text-xs text-zinc-500 hover:underline">
             ← Leads
           </Link>
-          <h1 className="mt-1 text-xl font-semibold">{lead.full_name ?? "Unnamed lead"}</h1>
+          <h2 className="mt-1 text-xl font-semibold">{lead.full_name ?? "Unnamed lead"}</h2>
           <p className="tabular mt-0.5 text-sm text-zinc-500">
             {lead.primary_phone ?? "—"}
             {lead.primary_email ? ` · ${lead.primary_email}` : ""} · {lead.reference}

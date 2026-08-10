@@ -48,7 +48,7 @@ export default async function WalkInsPage({
       <div className="flex flex-col justify-between gap-3 sm:flex-row sm:items-end">
         <div>
           <p className="text-xs font-semibold uppercase tracking-[0.16em] text-primary">Reception desk</p>
-          <h1 className="mt-1 text-2xl font-bold tracking-tight">Walk-in check-in</h1>
+          <h2 className="mt-1 text-2xl font-bold tracking-tight">Walk-in check-in</h2>
           <p className="mt-0.5 text-sm text-muted-foreground">Search existing customers or capture a first-time visitor.</p>
         </div>
         <div className="flex flex-wrap gap-2">

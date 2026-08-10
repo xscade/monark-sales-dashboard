@@ -81,6 +81,10 @@ export interface StageMoveDetails {
   followUpChannel?: FollowUpChannel;
   followUpNote?: string;
   followUpCommitment?: string;
+  siteVisitAt?: string;
+  siteVisitUnits?: string;
+  siteVisitIntent?: string;
+  siteVisitNotes?: string;
 }
 
 function targetState(stage: string, card: PipelineCard | null): TargetState {
@@ -193,16 +197,13 @@ export function PipelineBoard({
         toast.error(check.reason ?? "That move is not allowed");
         return;
       }
-      // One dialog for both questions. A backwards move into a late stage needs
-      // a reason AND a next step, and asking twice in sequence is how people
-      // learn to dismiss dialogs without reading them.
-      if (check.requiresReason || needsFollowUp(toStage)) {
-        setPrompt({ card, toStage });
-        return;
-      }
-      commitMove(card, toStage, {});
+      // Every move asks, so the follow-up list can be trusted: a stage that
+      // changed without a next step is exactly the lead that goes quiet. One
+      // dialog covers reason, next step and site visit together — asking in
+      // sequence is how people learn to dismiss dialogs without reading them.
+      setPrompt({ card, toStage });
     },
-    [commitMove],
+    [],
   );
 
   const stageAtPoint = useCallback((x: number, y: number): string | null => {
@@ -607,13 +608,21 @@ export function PipelineBoard({
 const fieldClass =
   "w-full rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm outline-none focus:border-brand-500 dark:border-zinc-700 dark:bg-zinc-950";
 
+const pad = (value: number) => String(value).padStart(2, "0");
+const toLocalInput = (at: Date) =>
+  `${at.getFullYear()}-${pad(at.getMonth() + 1)}-${pad(at.getDate())}T${pad(at.getHours())}:${pad(at.getMinutes())}`;
+
 /** Default the follow-up to tomorrow morning rather than to an empty box. */
 function defaultFollowUpAt(): string {
   const at = new Date();
   at.setDate(at.getDate() + 1);
   at.setHours(10, 0, 0, 0);
-  const pad = (value: number) => String(value).padStart(2, "0");
-  return `${at.getFullYear()}-${pad(at.getMonth() + 1)}-${pad(at.getDate())}T${pad(at.getHours())}:${pad(at.getMinutes())}`;
+  return toLocalInput(at);
+}
+
+/** A site visit being logged from the board almost always just happened. */
+function nowLocalInput(): string {
+  return toLocalInput(new Date());
 }
 
 /**
@@ -637,13 +646,20 @@ function StageMoveDialog({
   onConfirm: (details: StageMoveDetails) => void;
 }) {
   const regression = checkTransition(card.stage as LeadStage, toStage as LeadStage).requiresReason;
-  const followUp = needsFollowUp(toStage);
+  // Always asked. `lateStage` only changes how insistently it is framed.
+  const followUp = true;
+  const lateStage = needsFollowUp(toStage);
 
   const [reason, setReason] = useState("");
   const [at, setAt] = useState(defaultFollowUpAt);
   const [channel, setChannel] = useState<FollowUpChannel>("call");
   const [note, setNote] = useState("");
   const [commitment, setCommitment] = useState("");
+  const [logSiteVisit, setLogSiteVisit] = useState(false);
+  const [siteVisitAt, setSiteVisitAt] = useState(nowLocalInput);
+  const [siteVisitUnits, setSiteVisitUnits] = useState("");
+  const [siteVisitIntent, setSiteVisitIntent] = useState("");
+  const [siteVisitNotes, setSiteVisitNotes] = useState("");
   const firstFieldRef = useRef<HTMLInputElement | HTMLSelectElement | null>(null);
 
   useEffect(() => {
@@ -677,6 +693,10 @@ function StageMoveDialog({
             followUpChannel: followUp ? channel : undefined,
             followUpNote: followUp && note.trim() ? note.trim() : undefined,
             followUpCommitment: followUp && commitment.trim() ? commitment.trim() : undefined,
+            siteVisitAt: logSiteVisit ? siteVisitAt : undefined,
+            siteVisitUnits: logSiteVisit && siteVisitUnits.trim() ? siteVisitUnits.trim() : undefined,
+            siteVisitIntent: logSiteVisit && siteVisitIntent ? siteVisitIntent : undefined,
+            siteVisitNotes: logSiteVisit && siteVisitNotes.trim() ? siteVisitNotes.trim() : undefined,
           });
         }}
         className="max-h-[90vh] w-full max-w-md overflow-y-auto rounded-xl border border-zinc-200 bg-white p-5 shadow-xl dark:border-zinc-800 dark:bg-zinc-900"
@@ -711,8 +731,9 @@ function StageMoveDialog({
               Next follow-up
             </p>
             <p className="mt-1 text-xs text-zinc-500">
-              Past Contacted, every move came out of a real conversation. Capture what was agreed
-              while it is still fresh.
+              {lateStage
+                ? "Past Contacted, every move came out of a real conversation. Capture what was agreed while it is still fresh."
+                : "Every move gets a next step, so this lead cannot fall off the follow-up list."}
             </p>
 
             <div className="mt-3 grid gap-3 sm:grid-cols-2">
@@ -769,6 +790,77 @@ function StageMoveDialog({
             </label>
           </div>
         )}
+
+        {/* A conversation that happened on site is evidence, and it is only
+            ever captured if it is asked for at the moment of the move. Without
+            this the activity log quietly diverges from what the team did. */}
+        <div className="mt-5 rounded-lg border border-zinc-200 p-3 dark:border-zinc-800">
+          <label className="flex items-start gap-2.5">
+            <input
+              type="checkbox"
+              checked={logSiteVisit}
+              onChange={(event) => setLogSiteVisit(event.target.checked)}
+              className="mt-0.5 size-4 accent-brand-600"
+            />
+            <span>
+              <span className="block text-sm font-medium">They visited the project site</span>
+              <span className="block text-xs text-zinc-500">
+                Records a completed site visit and reports it as one — separate from the stage
+                change.
+              </span>
+            </span>
+          </label>
+
+          {logSiteVisit && (
+            <div className="mt-3 grid gap-3 sm:grid-cols-2">
+              <label className="block">
+                <span className="mb-1 block text-xs font-medium text-zinc-500">When *</span>
+                <input
+                  type="datetime-local"
+                  required
+                  value={siteVisitAt}
+                  onChange={(event) => setSiteVisitAt(event.target.value)}
+                  className={fieldClass}
+                />
+              </label>
+              <label className="block">
+                <span className="mb-1 block text-xs font-medium text-zinc-500">Intent after the visit</span>
+                <select
+                  value={siteVisitIntent}
+                  onChange={(event) => setSiteVisitIntent(event.target.value)}
+                  className={fieldClass}
+                >
+                  <option value="">Unrated</option>
+                  <option value="5">Very high</option>
+                  <option value="4">High</option>
+                  <option value="3">Medium</option>
+                  <option value="2">Low</option>
+                  <option value="1">Just looking</option>
+                </select>
+              </label>
+              <label className="block sm:col-span-2">
+                <span className="mb-1 block text-xs font-medium text-zinc-500">Units seen on site</span>
+                <input
+                  value={siteVisitUnits}
+                  onChange={(event) => setSiteVisitUnits(event.target.value)}
+                  placeholder="A-804, sample flat"
+                  className={fieldClass}
+                />
+              </label>
+              <label className="block sm:col-span-2">
+                <span className="mb-1 block text-xs font-medium text-zinc-500">Site visit notes</span>
+                <textarea
+                  value={siteVisitNotes}
+                  onChange={(event) => setSiteVisitNotes(event.target.value)}
+                  rows={2}
+                  maxLength={2000}
+                  placeholder="Which tower, what they reacted to, who came along"
+                  className={fieldClass}
+                />
+              </label>
+            </div>
+          )}
+        </div>
 
         <div className="mt-5 flex justify-end gap-2">
           <button

@@ -52,7 +52,6 @@ export default async function LeadsPage({
     <div className="space-y-5">
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
-          <h1 className="text-xl font-semibold">Leads</h1>
           <p className="mt-0.5 text-sm text-zinc-500">{formatNumber(total)} matching</p>
         </div>
 

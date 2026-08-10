@@ -1,12 +1,12 @@
 import Link from "next/link";
-import { Card, DataTable, EmptyState, SubmitButton, Td, Th } from "@/components/ui";
+import { Card, DataTable, EmptyState, Td, Th } from "@/components/ui";
 import { can, requirePermission } from "@/lib/auth";
-import { createUnitAction } from "@/lib/commercial-actions";
 import {
   listCommercialLeads,
   listCommercialProjects,
   listInventory,
 } from "@/lib/commercial-queries";
+import { AddInventoryPanel } from "@/components/add-inventory-panel";
 import { UnitManagePanel } from "@/components/unit-manage-panel";
 import { formatDateTime, formatINR } from "@/lib/format";
 
@@ -75,7 +75,6 @@ export default async function InventoryPage({
     <div className="space-y-5">
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
-          <h1 className="text-xl font-semibold">Inventory</h1>
           <p className="mt-0.5 text-sm text-zinc-500">
             Live sellable units. Holds expire automatically; financial states come from bookings.
           </p>
@@ -132,35 +131,7 @@ export default async function InventoryPage({
         </form>
       </Card>
 
-      {mayWrite && (
-        <Card title="Add inventory" subtitle="Project and unit number form the commercial identity.">
-          <form action={createUnitAction} className="grid gap-3 p-5 sm:grid-cols-2 lg:grid-cols-4">
-            <label className="block">
-              <span className="mb-1 block text-xs text-zinc-500">Project *</span>
-              <select name="projectId" required className={inputClass}>
-                <option value="">Select project</option>
-                {projects.map((project) => (
-                  <option key={project.id} value={project.id}>
-                    {project.name}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <Field label="Tower" name="tower" placeholder="A" />
-            <Field label="Unit number *" name="unitNumber" required placeholder="1204" />
-            <Field label="Floor" name="floor" type="number" />
-            <Field label="Configuration *" name="configuration" required placeholder="3 BHK" />
-            <Field label="Carpet area (sq ft)" name="carpetAreaSqft" type="number" step="0.01" />
-            <Field label="Saleable area (sq ft)" name="saleableAreaSqft" type="number" step="0.01" />
-            <Field label="Facing" name="facing" placeholder="East" />
-            <Field label="Base price" name="basePrice" type="number" step="0.01" />
-            <Field label="All-in price" name="allInPrice" type="number" step="0.01" />
-            <div className="flex items-end sm:col-span-2">
-              <SubmitButton className="w-full">Add unit</SubmitButton>
-            </div>
-          </form>
-        </Card>
-      )}
+      {mayWrite && <AddInventoryPanel projects={projects} />}
 
       <Card title={`${rows.length} units`} subtitle="Up to 500 units are shown for the current filter.">
         {rows.length === 0 ? (
@@ -250,18 +221,5 @@ export default async function InventoryPage({
         )}
       </Card>
     </div>
-  );
-}
-
-function Field({
-  label,
-  name,
-  ...props
-}: { label: string; name: string } & React.InputHTMLAttributes<HTMLInputElement>) {
-  return (
-    <label className="block">
-      <span className="mb-1 block text-xs text-zinc-500">{label}</span>
-      <input name={name} {...props} className={inputClass} />
-    </label>
   );
 }

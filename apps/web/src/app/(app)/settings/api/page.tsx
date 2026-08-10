@@ -22,7 +22,7 @@ export default async function ApiSettingsPage({
         <Link href="/settings" className="text-xs text-zinc-500 hover:text-zinc-900 dark:hover:text-zinc-100">
           ← Settings
         </Link>
-        <h1 className="mt-2 text-xl font-semibold">API access</h1>
+        <h2 className="mt-2 text-xl font-semibold">API access</h2>
         <p className="mt-0.5 text-sm text-zinc-500">
           Secure inbound lead ingestion at <code>/v1/leads</code>
         </p>

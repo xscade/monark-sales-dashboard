@@ -77,7 +77,10 @@ export function FollowUpSortControls({
         </div>
       )}
 
-      <details className="rounded-xl border bg-card" open={!fromOverview}>
+      {/* Closed by default. The summary already states the active order, which
+          is the only thing most visits need to know; opening it is for the rare
+          moment someone wants to change it. */}
+      <details className="rounded-xl border bg-card">
         <summary className="flex cursor-pointer items-center justify-between gap-3 px-4 py-3 text-sm font-medium">
           <span className="flex items-center gap-2">
             <ArrowUpDown aria-hidden className="size-4" />

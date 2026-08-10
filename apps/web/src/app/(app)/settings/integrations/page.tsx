@@ -22,7 +22,7 @@ export default async function IntegrationsPage({ searchParams }: {
   return <div className="space-y-5">
     <div>
       <Link href="/settings" className="text-xs text-zinc-500">← Settings</Link>
-      <h1 className="mt-2 text-xl font-semibold">Meta & Google integrations</h1>
+      <h2 className="mt-2 text-xl font-semibold">Meta & Google integrations</h2>
       <p className="mt-0.5 text-sm text-zinc-500">Replace-only credentials, destination config and event routing</p>
     </div>
     <SettingsFlash notice={messages.notice} error={messages.error} />

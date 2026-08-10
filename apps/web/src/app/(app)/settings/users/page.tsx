@@ -29,7 +29,7 @@ export default async function UsersSettingsPage({
         <Link href="/settings" className="text-xs text-zinc-500 hover:text-zinc-900 dark:hover:text-zinc-100">
           ← Settings
         </Link>
-        <h1 className="mt-2 text-xl font-semibold">Users</h1>
+        <h2 className="mt-2 text-xl font-semibold">Users</h2>
         <p className="mt-0.5 text-sm text-zinc-500">
           Manage CRM permissions, routing languages and lead capacity
         </p>

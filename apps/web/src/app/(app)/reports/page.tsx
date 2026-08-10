@@ -39,7 +39,7 @@ export default async function ReportsPage({
     <div className="space-y-5">
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
-          <h1 className="text-xl font-semibold">Commercial reports</h1>
+          <h2 className="text-xl font-semibold">Commercial reports</h2>
           <p className="mt-0.5 text-sm text-zinc-500">
             Inventory, funnel, sales, campaign, and collection outcomes from business facts.
           </p>

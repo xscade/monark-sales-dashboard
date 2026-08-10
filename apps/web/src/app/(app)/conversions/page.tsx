@@ -42,7 +42,6 @@ export default async function ConversionsPage() {
   return (
     <div className="space-y-5">
       <div>
-        <h1 className="text-xl font-semibold">Conversion sync</h1>
         <p className="mt-0.5 text-sm text-zinc-500">
           Offline events queued for Meta and Google
         </p>

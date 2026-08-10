@@ -16,8 +16,8 @@ import { revalidatePath } from "next/cache";
 import { z } from "zod";
 import { requirePermission, type SessionUser } from "./auth";
 import { localDateTimeSchema, parseLocalDateTime } from "./datetime";
-import { syncLeadNextFollowUp } from "./follow-up-sync";
-import { FOLLOW_UP_CHANNELS, FOLLOW_UP_CHANNEL_LABELS, type FollowUpChannel } from "./follow-ups";
+import { insertFollowUpTask, type FollowUpDraft } from "./follow-up-sync";
+import { FOLLOW_UP_CHANNELS } from "./follow-ups";
 import { lockLeadForUpdate } from "./lead-lock";
 import { EDITABLE_STAGES, LOST_REASONS, type EditableStage, type LostReason } from "./stage-edit";
 
@@ -137,11 +137,12 @@ async function modelledValue(
  * Two copies of that would drift, and the drift would be invisible until the
  * funnel numbers stopped adding up.
  */
-interface FollowUpInput {
+interface SiteVisitInput {
+  visitId: string;
   at: Date;
-  channel: FollowUpChannel;
-  note: string | null;
-  commitment: string | null;
+  unitsViewed: string[] | null;
+  intentRating: number | null;
+  notes: string | null;
 }
 
 async function applyStageChange(
@@ -151,7 +152,8 @@ async function applyStageChange(
     toStage: EditableStage;
     reason: string | null;
     reasonCode?: LostReason;
-    followUp?: FollowUpInput;
+    followUp?: FollowUpDraft;
+    siteVisit?: SiteVisitInput;
   },
 ) {
   const { leadId, toStage, reasonCode } = input;
@@ -240,26 +242,56 @@ async function applyStageChange(
     // way would give the follow-up list and the task list two different
     // answers to "what happens next with this buyer".
     if (input.followUp) {
-      const { at, channel, note, commitment } = input.followUp;
-      const body = [note, commitment && `Committed: ${commitment}`]
-        .filter(Boolean)
-        .join("\n") || null;
-      await tx.insert(activities).values({
-        id: randomUUID(),
+      await insertFollowUpTask(tx, {
         orgId: user.orgId,
         leadId,
         personId: lead.personId,
-        type: "task",
-        subject: `${FOLLOW_UP_CHANNEL_LABELS[channel]} after moving to ${toStage.replace(/_/g, " ")}`,
-        body,
-        dueAt: at,
         // Whoever owns the lead does the work, falling back to the person who
         // moved the card when the lead is still unassigned.
-        userId: lead.ownerUserId ?? user.id,
-        metadata: { channel, source: "pipeline_stage_change", stage: toStage },
-        occurredAt: now,
+        assigneeUserId: lead.ownerUserId ?? user.id,
+        context: `moved to ${toStage.replace(/_/g, " ")}`,
+        followUp: input.followUp,
       });
-      await syncLeadNextFollowUp(tx, user.orgId, leadId);
+    }
+
+    // A site visit recorded alongside the move. Separate from the stage change
+    // on purpose: the stage says where the deal is, the visit is evidence that
+    // somebody stood on the plot, and only the latter is worth reporting to the
+    // ad platforms as a site visit.
+    if (input.siteVisit) {
+      if (!lead.projectId) {
+        throw new Error("Assign a project before recording a site visit");
+      }
+      await tx.insert(visits).values({
+        id: input.siteVisit.visitId,
+        orgId: user.orgId,
+        leadId,
+        personId: lead.personId,
+        projectId: lead.projectId,
+        type: "project_site",
+        status: "completed",
+        arrivedAt: input.siteVisit.at,
+        hostUserId: lead.ownerUserId ?? user.id,
+        unitsViewed: input.siteVisit.unitsViewed,
+        intentRating: input.siteVisit.intentRating,
+        notes: input.siteVisit.notes,
+        checkInMethod: "manual",
+        createdByUserId: user.id,
+      });
+      await emitConversionEvent(tx, {
+        orgId: user.orgId,
+        eventType: "site_visit_completed",
+        personId: lead.personId,
+        leadId,
+        projectId: lead.projectId,
+        touchpointId: lead.firstTouchpointId,
+        occurredAt: input.siteVisit.at,
+        eventKey: eventKeyFor.visitCompleted(input.siteVisit.visitId),
+        value: await modelledValue(tx, lead.projectId, "visited"),
+        stageAtEvent: toStage,
+        sourceEntityType: "visit",
+        sourceEntityId: input.siteVisit.visitId,
+      });
     }
   });
 
@@ -322,6 +354,10 @@ export async function moveLeadStage(input: {
   followUpChannel?: string;
   followUpNote?: string;
   followUpCommitment?: string;
+  siteVisitAt?: string;
+  siteVisitUnits?: string;
+  siteVisitIntent?: string;
+  siteVisitNotes?: string;
 }): Promise<StageMoveResult> {
   const user = await requirePermission("leads:write");
   const parsed = stageChangeSchema.safeParse({
@@ -334,7 +370,50 @@ export async function moveLeadStage(input: {
     return { ok: false, message: "That stage cannot be set from the board" };
   }
 
-  let followUp: FollowUpInput | undefined;
+  let siteVisit: SiteVisitInput | undefined;
+  if (input.siteVisitAt) {
+    const parsedSiteVisit = z
+      .object({
+        siteVisitAt: localDateTimeSchema,
+        siteVisitUnits: z.preprocess(
+          (value) => String(value ?? "").split(",").map((item) => item.trim()).filter(Boolean),
+          z.array(z.string().max(120)).max(20),
+        ),
+        siteVisitIntent: z.preprocess(
+          (value) => String(value ?? "").trim() || undefined,
+          z.coerce.number().int().min(1).max(5).optional(),
+        ),
+        siteVisitNotes: z.preprocess(
+          (value) => String(value ?? "").trim() || undefined,
+          z.string().max(2000).optional(),
+        ),
+      })
+      .safeParse({
+        siteVisitAt: input.siteVisitAt,
+        siteVisitUnits: input.siteVisitUnits,
+        siteVisitIntent: input.siteVisitIntent,
+        siteVisitNotes: input.siteVisitNotes,
+      });
+    if (!parsedSiteVisit.success) {
+      return { ok: false, message: parsedSiteVisit.error.issues[0]?.message ?? "Check the site visit details" };
+    }
+    const at = parseLocalDateTime(parsedSiteVisit.data.siteVisitAt, user.timezone);
+    if (!at) return { ok: false, message: "Choose a valid site visit time" };
+    // A visit that has not happened yet is an appointment, and appointments are
+    // scheduled, not recorded as completed.
+    if (at.getTime() > Date.now() + 60_000) {
+      return { ok: false, message: "A recorded site visit cannot be in the future — schedule it instead" };
+    }
+    siteVisit = {
+      visitId: randomUUID(),
+      at,
+      unitsViewed: parsedSiteVisit.data.siteVisitUnits.length ? parsedSiteVisit.data.siteVisitUnits : null,
+      intentRating: parsedSiteVisit.data.siteVisitIntent ?? null,
+      notes: parsedSiteVisit.data.siteVisitNotes ?? null,
+    };
+  }
+
+  let followUp: FollowUpDraft | undefined;
   if (input.followUpAt) {
     const parsedFollowUp = boardFollowUpSchema.safeParse({
       followUpAt: input.followUpAt,
@@ -367,6 +446,7 @@ export async function moveLeadStage(input: {
       reason: parsed.data.reason ?? null,
       reasonCode: parsed.data.reasonCode,
       followUp,
+      siteVisit,
     });
   } catch (error) {
     return { ok: false, message: error instanceof Error ? error.message : "Could not move the lead" };

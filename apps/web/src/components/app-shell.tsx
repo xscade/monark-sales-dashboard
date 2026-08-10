@@ -244,7 +244,10 @@ export function AppShell({ children, user, sections, quickActions, signOutAction
               <p className="truncate text-[10px] font-semibold uppercase tracking-[0.16em] text-muted-foreground">
                 {user.orgName}
               </p>
-              <p className="truncate text-sm font-semibold tracking-tight sm:text-base">{activeLabel}</p>
+              {/* The page title lives here, once. Pages whose own heading
+                  would only repeat this one have had it removed, so this has
+                  to be the real heading rather than decorative text. */}
+              <h1 className="truncate text-sm font-semibold tracking-tight sm:text-base">{activeLabel}</h1>
             </div>
 
             <div className="hidden items-center gap-2 sm:flex">

@@ -58,7 +58,7 @@ export default async function BookingsPage({
     <div className="space-y-5">
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
-          <h1 className="text-xl font-semibold">Booking register</h1>
+          <h2 className="text-xl font-semibold">Booking register</h2>
           <p className="mt-0.5 text-sm text-zinc-500">
             Every entry is backed by a unit, buyer, booking row, and token payment.
           </p>

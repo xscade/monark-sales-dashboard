@@ -52,10 +52,10 @@ export default async function CustomersPage({
     <div className="space-y-5">
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
-          <h1 className="text-xl font-semibold">
-            {segment === "customers" ? "Customers" : "All contacts"}
-          </h1>
-          <p className="mt-0.5 text-sm text-zinc-500">
+          {/* No heading here: the header already says Customers, and the
+              segment toggle below names the view more precisely than a title
+              could. */}
+          <p className="text-sm text-zinc-500">
             {segment === "customers"
               ? `${formatNumber(total)} customer${total === 1 ? "" : "s"} · everyone here has a live booking`
               : `${formatNumber(total)} contact${total === 1 ? "" : "s"} · enquiries included`}

@@ -23,7 +23,7 @@ export default async function SourcesSettingsPage() {
 
   return (
     <div className="space-y-6">
-      <div><Button asChild variant="ghost" size="sm" className="-ml-3 mb-2"><Link href="/settings"><ArrowLeft />Settings</Link></Button><p className="text-xs font-semibold uppercase tracking-[0.16em] text-primary">Lead capture</p><h1 className="mt-1 text-2xl font-bold tracking-tight">Sources & website API</h1><p className="mt-1 text-sm text-muted-foreground">One ingestion contract for website forms, agencies, portals, webhooks and manual capture.</p></div>
+      <div><Button asChild variant="ghost" size="sm" className="-ml-3 mb-2"><Link href="/settings"><ArrowLeft />Settings</Link></Button><p className="text-xs font-semibold uppercase tracking-[0.16em] text-primary">Lead capture</p><h2 className="mt-1 text-2xl font-bold tracking-tight">Sources & website API</h2><p className="mt-1 text-sm text-muted-foreground">One ingestion contract for website forms, agencies, portals, webhooks and manual capture.</p></div>
 
       <div className="grid gap-5 xl:grid-cols-[minmax(0,1.25fr)_minmax(360px,.75fr)]">
         <Card className="gap-0 py-0 shadow-sm">

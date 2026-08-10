@@ -47,7 +47,7 @@ export default async function BookingDetailPage({ params }: { params: Promise<{ 
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <div className="flex flex-wrap items-center gap-2">
-            <h1 className="text-xl font-semibold">{booking.reference}</h1>
+            <h2 className="text-xl font-semibold">{booking.reference}</h2>
             <span
               className={`inline-flex rounded-md px-2 py-0.5 text-xs font-medium ${statusClass[booking.status] ?? "bg-zinc-100 text-zinc-700"}`}
             >

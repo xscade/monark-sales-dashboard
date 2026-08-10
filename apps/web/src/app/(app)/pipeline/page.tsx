@@ -49,7 +49,6 @@ export default async function PipelinePage({
     <div className="space-y-5">
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
-          <h1 className="text-xl font-semibold">Pipeline</h1>
           <p className="mt-0.5 text-sm text-zinc-500">
             {formatNumber(leads.length)} open leads
           </p>

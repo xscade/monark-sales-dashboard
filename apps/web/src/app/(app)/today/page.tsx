@@ -37,7 +37,6 @@ export default async function TodayPage({
     <div className="space-y-6">
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
-          <h1 className="text-xl font-semibold">Today</h1>
           <p className="mt-0.5 text-sm text-zinc-500">
             {ownerId === user.id ? "Your daily sales queue" : "Team sales queue"}
           </p>

@@ -1,4 +1,5 @@
 import { getDb, users, orgs } from "@monark/db";
+import type { User } from "@supabase/supabase-js";
 import { and, eq } from "drizzle-orm";
 import { redirect } from "next/navigation";
 import { cache } from "react";
@@ -13,6 +14,22 @@ export interface SessionUser {
   name: string;
   role: "owner" | "admin" | "marketing" | "sales_manager" | "sales_agent" | "receptionist" | "read_only";
 }
+
+/**
+ * Verify the Supabase identity once per server render.
+ *
+ * Both the layout and its page call `requireUser`, and resolving the CRM user
+ * also needs the Auth identity. Keeping this request-scoped avoids turning one
+ * page view into several calls to Supabase Auth.
+ */
+export const getAuthUser = cache(async (): Promise<User | null> => {
+  const supabase = await createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+
+  return user;
+});
 
 /**
  * Resolve the signed-in Supabase identity to a Monark user.
@@ -30,10 +47,7 @@ export interface SessionUser {
  * during one render share a single query.
  */
 export const getCurrentUser = cache(async (): Promise<SessionUser | null> => {
-  const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  const user = await getAuthUser();
 
   if (!user?.email) return null;
 
@@ -66,10 +80,28 @@ export const getCurrentUser = cache(async (): Promise<SessionUser | null> => {
   };
 });
 
-/** Use in every authenticated page. Redirects rather than throwing. */
+/**
+ * Use in every authenticated page. Redirects rather than throwing.
+ *
+ * The destination matters. Sending a signed-in-but-unauthorised visitor to
+ * /login creates an infinite redirect loop: the middleware bounces anyone with
+ * a Supabase session away from /login and back here, and here sends them
+ * straight back. Two different definitions of "authenticated" pointing at each
+ * other.
+ *
+ * /no-access breaks the cycle — it renders for anyone holding a session and
+ * offers a way out.
+ */
 export async function requireUser(): Promise<SessionUser> {
+  const authUser = await getAuthUser();
+
+  // No session at all: the login page is the right place.
+  if (!authUser) redirect("/login");
+
   const user = await getCurrentUser();
-  if (!user) redirect("/login");
+  // Valid Supabase identity, but no active row in our users table.
+  if (!user) redirect("/no-access");
+
   return user;
 }
 

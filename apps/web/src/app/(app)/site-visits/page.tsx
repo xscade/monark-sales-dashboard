@@ -1,11 +1,12 @@
 import Link from "next/link";
-import { CalendarCheck2, Check, CircleX, Clock3, MapPin, Plus, UserRoundCheck } from "lucide-react";
+import { CalendarCheck2, Check, CircleX, Clock3, MapPin, Plus, Search, UserRoundCheck, X } from "lucide-react";
 import { requirePermission, can } from "@/lib/auth";
 import { getVisitSchedulingOptions, listVisits, type VisitStatus } from "@/lib/visit-queries";
 import { updateVisitStatus } from "@/lib/visit-actions";
 import { VisitScheduler } from "@/components/visit-scheduler";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { formatDateTime, maskPhoneDisplay } from "@/lib/format";
 import { cn } from "@/lib/utils";
@@ -21,25 +22,47 @@ const statusTone: Record<VisitStatus, string> = {
   cancelled: "bg-muted text-muted-foreground",
 };
 
-export default async function SiteVisitsPage({ searchParams }: { searchParams: Promise<{ range?: string; status?: string }> }) {
+export default async function SiteVisitsPage({ searchParams }: { searchParams: Promise<{ range?: string; status?: string; q?: string }> }) {
   const user = await requirePermission("visits:read");
   const params = await searchParams;
   const range = (["today", "upcoming", "past"].includes(params.range ?? "") ? params.range : "upcoming") as "today" | "upcoming" | "past";
   const status = (["scheduled", "confirmed", "arrived", "completed", "no_show", "cancelled"].includes(params.status ?? "") ? params.status : undefined) as VisitStatus | undefined;
+  const search = params.q?.trim() ?? "";
   const writable = can(user, "visits:write");
   const personalUserId = user.role === "sales_agent" ? user.id : undefined;
   const [rows, options] = await Promise.all([
-    listVisits(user.orgId, { range, status, userId: personalUserId }),
+    listVisits(user.orgId, { range, status, userId: personalUserId, search }),
     writable ? getVisitSchedulingOptions(user.orgId, personalUserId) : Promise.resolve({ leads: [], hosts: [] }),
   ]);
+  const buildHref = (next: { range?: string; q?: string }) => {
+    const query = new URLSearchParams();
+    query.set("range", next.range ?? range);
+    if (status) query.set("status", status);
+    const term = next.q ?? search;
+    if (term) query.set("q", term);
+    return `/site-visits?${query.toString()}`;
+  };
 
   return (
     <div className="space-y-6">
       <div className="flex flex-col justify-between gap-3 sm:flex-row sm:items-end"><div><p className="text-xs font-semibold uppercase tracking-[0.16em] text-primary">Field operations</p><p className="mt-1 text-sm text-muted-foreground">Appointments, arrivals, outcomes and no-shows—kept as separate facts.</p></div>{writable && <Button asChild variant="outline"><Link href="/walk-ins/new"><Plus />Fresh walk-in</Link></Button>}</div>
       <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_360px]">
         <div className="space-y-4">
-          <div className="flex flex-wrap items-center gap-2">{(["today", "upcoming", "past"] as const).map((item) => <Button key={item} asChild size="sm" variant={range === item ? "default" : "outline"}><Link href={`/site-visits?range=${item}${status ? `&status=${status}` : ""}`} className="capitalize">{item}</Link></Button>)}</div>
-          {rows.length === 0 ? <Card><CardContent className="flex min-h-64 flex-col items-center justify-center text-center"><CalendarCheck2 className="size-8 text-muted-foreground/55" /><p className="mt-3 text-sm font-semibold">No visits in this view</p><p className="mt-1 text-xs text-muted-foreground">Schedule the next appointment or change the date filter.</p></CardContent></Card> : rows.map((visit) => (
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="flex flex-wrap items-center gap-2">{(["today", "upcoming", "past"] as const).map((item) => <Button key={item} asChild size="sm" variant={range === item ? "default" : "outline"}><Link href={buildHref({ range: item })} className="capitalize">{item}</Link></Button>)}</div>
+            <form method="get" action="/site-visits" className="flex items-center gap-2">
+              <input type="hidden" name="range" value={range} />
+              {status && <input type="hidden" name="status" value={status} />}
+              <div className="relative">
+                <Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
+                <Input type="search" name="q" defaultValue={search} aria-label="Search visits by customer" placeholder="Customer name, phone or LD-reference" className="h-8 w-60 pl-8 text-sm sm:w-72" />
+              </div>
+              <Button size="sm" type="submit" variant="secondary">Search</Button>
+              {search && <Button asChild size="sm" variant="ghost" className="text-muted-foreground"><Link href={buildHref({ q: "" })}><X />Clear</Link></Button>}
+            </form>
+          </div>
+          {search && rows.length > 0 && <p className="text-xs text-muted-foreground">{rows.length} {rows.length === 1 ? "visit" : "visits"} matching “{search}”</p>}
+          {rows.length === 0 ? <Card><CardContent className="flex min-h-64 flex-col items-center justify-center text-center"><CalendarCheck2 className="size-8 text-muted-foreground/55" /><p className="mt-3 text-sm font-semibold">{search ? `No visits match “${search}”` : "No visits in this view"}</p><p className="mt-1 text-xs text-muted-foreground">{search ? "Try a phone number or LD-reference, or clear the search to see every visit in this view." : "Schedule the next appointment or change the date filter."}</p></CardContent></Card> : rows.map((visit) => (
             <Card key={visit.id} className="gap-0 py-0 shadow-sm">
               <CardContent className="p-4 sm:p-5">
                 <div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-start">

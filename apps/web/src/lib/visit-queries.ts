@@ -5,13 +5,25 @@ export type VisitStatus = "scheduled" | "confirmed" | "arrived" | "completed" | 
 
 export async function listVisits(
   orgId: string,
-  filters: { status?: VisitStatus; range?: "today" | "upcoming" | "past"; userId?: string } = {},
+  filters: { status?: VisitStatus; range?: "today" | "upcoming" | "past"; userId?: string; search?: string } = {},
 ) {
   const conditions = [sql`v.org_id = ${orgId}`];
   if (filters.userId) {
     conditions.push(sql`(l.owner_user_id = ${filters.userId} OR v.host_user_id = ${filters.userId})`);
   }
   if (filters.status) conditions.push(sql`v.status = ${filters.status}::visit_status`);
+  if (filters.search?.trim()) {
+    // Same shape as the lead search: whoever is on the phone has a number or a
+    // half-remembered name, not a visit id. Matching the stored phone means
+    // "9876543210" still finds "+919876543210".
+    const term = `%${filters.search.trim().replace(/[%_]/g, "")}%`;
+    conditions.push(sql`(
+      p.full_name ILIKE ${term}
+      OR p.primary_phone ILIKE ${term}
+      OR p.primary_email ILIKE ${term}
+      OR l.reference ILIKE ${term}
+    )`);
+  }
   if (filters.range === "today") {
     conditions.push(sql`(v.scheduled_at AT TIME ZONE o.timezone)::date = (now() AT TIME ZONE o.timezone)::date`);
   } else if (filters.range === "upcoming") {

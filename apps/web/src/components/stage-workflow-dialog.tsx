@@ -4,14 +4,16 @@ import { useActionState, useEffect, useState } from "react";
 import { AlertCircle, Building2, CalendarClock, Loader2, MapPin, Wallet } from "lucide-react";
 import {
   checkInFromBoard,
+  confirmBookingFromBoard,
   getStageAdvanceContext,
   recordBookingFromBoard,
   scheduleVisitFromBoard,
   setProjectFromBoard,
+  type OpenBooking,
   type StageAdvanceContext,
   type StageAdvanceState,
 } from "@/lib/stage-advance-actions";
-import { stageLabel } from "@/lib/format";
+import { formatINR, stageLabel } from "@/lib/format";
 import { FOLLOW_UP_CHANNELS, FOLLOW_UP_CHANNEL_LABELS } from "@/lib/follow-ups";
 
 const field =
@@ -166,6 +168,20 @@ function WorkflowForm({
   if (isBooking && needsProject) {
     return (
       <ProjectFirst context={context} onCancel={onCancel} onProjectSet={onProjectSet} />
+    );
+  }
+
+  // A lead may hold one live booking. Once it exists, every route to `booked`
+  // runs through that record — creating a second one is refused outright.
+  if (isBooking && context.openBooking) {
+    return (
+      <ExistingBooking
+        context={context}
+        booking={context.openBooking}
+        toStage={toStage}
+        onCancel={onCancel}
+        onDone={onDone}
+      />
     );
   }
 
@@ -414,6 +430,112 @@ function VisitForm({
 
       <Failure state={state} />
       <Footer pending={pending} label={scheduling ? "Schedule visit" : "Check in"} onCancel={onCancel} />
+    </form>
+  );
+}
+
+const BOOKING_STATUS_LABEL: Record<OpenBooking["status"], string> = {
+  token: "token paid",
+  booked: "confirmed",
+  agreement_signed: "agreement signed",
+  registered: "registered",
+};
+
+/**
+ * The path for a lead that already has a booking on record.
+ *
+ * `token` is the case worth handling properly: the money is in, the unit is
+ * allocated, and all that is missing between here and `booked` is the agreement
+ * value — so ask for that one number and advance the booking that exists.
+ * Anything further along is already at or past `booked`, and the honest answer
+ * is to say so and point at the record instead of offering a form that cannot
+ * do anything.
+ */
+function ExistingBooking({
+  context,
+  booking,
+  toStage,
+  onCancel,
+  onDone,
+}: {
+  context: StageAdvanceContext;
+  booking: OpenBooking;
+  toStage: string;
+  onCancel: () => void;
+  onDone: (message: string) => void;
+}) {
+  const [state, action, pending] = useActionState(confirmBookingFromBoard, initialState);
+  useEffect(() => {
+    if (state.ok) onDone(state.message ?? "Booking confirmed");
+  }, [state.ok, state.message, onDone]);
+
+  const summary = (
+    <div className="mt-4 rounded-lg border border-zinc-200 bg-zinc-50 px-3 py-2.5 text-xs dark:border-zinc-800 dark:bg-zinc-950/60">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <span className="font-semibold">{booking.reference}</span>
+        <span className="text-zinc-500">{BOOKING_STATUS_LABEL[booking.status]}</span>
+      </div>
+      <p className="mt-1 text-zinc-500">
+        {booking.unitLabel || "Unit unavailable"}
+        {booking.tokenAmount ? ` · token ${formatINR(booking.tokenAmount)}` : ""}
+      </p>
+      <a href={`/bookings/${booking.id}`} className="mt-1.5 inline-block font-medium text-brand-600 hover:underline">
+        Open the booking →
+      </a>
+    </div>
+  );
+
+  if (booking.status !== "token" || toStage !== "booked") {
+    return (
+      <div>
+        {summary}
+        <p className="mt-3 text-xs text-zinc-500">
+          {booking.status === "token"
+            ? `${context.leadName} already has a token on record, so this stage is set by the booking rather than by the board. Confirm it to move the lead to Booked.`
+            : `This booking is already ${BOOKING_STATUS_LABEL[booking.status]}, so the lead's stage follows from it. Work the remaining milestones on the booking itself.`}
+        </p>
+        <div className="mt-5 flex justify-end">
+          <button
+            type="button"
+            onClick={onCancel}
+            className="rounded-lg border border-zinc-300 px-3 py-2 text-sm hover:bg-zinc-50 dark:border-zinc-700 dark:hover:bg-zinc-800"
+          >
+            Close
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <form action={action}>
+      <input type="hidden" name="bookingId" value={booking.id} />
+      <input type="hidden" name="targetStatus" value="booked" />
+      {summary}
+
+      <label className="mt-4 block">
+        <span className="mb-1 block text-xs font-medium text-zinc-500">Agreement value (INR) *</span>
+        <input
+          type="number"
+          name="agreementValue"
+          min="0.01"
+          step="0.01"
+          required
+          defaultValue={booking.agreementValue ?? ""}
+          className={field}
+        />
+        <span className="mt-1 block text-xs text-zinc-500">
+          The last thing missing before this booking counts as confirmed.
+        </span>
+      </label>
+
+      <p className="mt-3 text-xs text-zinc-500">
+        This confirms {booking.reference} and moves {context.leadName} to Booked. No second booking
+        is created and the token already recorded stays as it is.
+      </p>
+
+      <Failure state={state} />
+      <Footer pending={pending} label="Confirm booking" onCancel={onCancel} />
     </form>
   );
 }

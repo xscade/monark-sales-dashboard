@@ -9,7 +9,7 @@ import { checkInVisit, updateLeadProject } from "./actions";
 import { parseLocalDateTime } from "./datetime";
 import { insertFollowUpTask } from "./follow-up-sync";
 import { FOLLOW_UP_CHANNELS } from "./follow-ups";
-import { createBookingAction } from "./commercial-actions";
+import { advanceBookingAction, createBookingAction } from "./commercial-actions";
 import { scheduleVisit } from "./visit-actions";
 
 /**
@@ -41,6 +41,23 @@ export interface StageAdvanceContext {
   projects: { id: string; name: string }[];
   agents: { id: string; name: string; role: string }[];
   units: { id: string; label: string; allInPrice: string | null }[];
+  /**
+   * The booking this lead already has, if any.
+   *
+   * A lead may hold exactly one live booking, so once a token is on record the
+   * way to `booked` is to confirm *that* booking — creating a second one is
+   * rejected by the database rules and leaves the board with nowhere to go.
+   */
+  openBooking: OpenBooking | null;
+}
+
+export interface OpenBooking {
+  id: string;
+  reference: string;
+  status: "token" | "booked" | "agreement_signed" | "registered";
+  unitLabel: string;
+  agreementValue: string | null;
+  tokenAmount: string | null;
 }
 
 /**
@@ -79,7 +96,7 @@ export async function getStageAdvanceContext(
     | undefined;
   if (!lead) return null;
 
-  const [projectResult, agentResult, unitResult] = await Promise.all([
+  const [projectResult, agentResult, unitResult, bookingResult] = await Promise.all([
     getDb().execute(sql`
       SELECT id, name FROM projects
       WHERE org_id = ${user.orgId} AND is_active = true
@@ -107,7 +124,28 @@ export async function getStageAdvanceContext(
           LIMIT 300
         `)
       : Promise.resolve({ rows: [] as unknown[] }),
+    getDb().execute(sql`
+      SELECT b.id, b.reference, b.status::text AS status,
+             b.agreement_value AS "agreementValue", b.token_amount AS "tokenAmount",
+             u.tower, u.unit_number AS "unitNumber", u.configuration
+      FROM bookings b
+      LEFT JOIN units u ON u.id = b.unit_id
+      WHERE b.org_id = ${user.orgId} AND b.lead_id = ${lead.id} AND b.status <> 'cancelled'
+      ORDER BY b.created_at DESC
+      LIMIT 1
+    `),
   ]);
+
+  const booking = (bookingResult.rows as unknown as {
+    id: string;
+    reference: string;
+    status: OpenBooking["status"];
+    agreementValue: string | null;
+    tokenAmount: string | null;
+    tower: string | null;
+    unitNumber: string | null;
+    configuration: string | null;
+  }[])[0];
 
   return {
     leadId: lead.id,
@@ -129,6 +167,18 @@ export async function getStageAdvanceContext(
       label: `${[unit.tower, unit.unitNumber].filter(Boolean).join(" · ")} · ${unit.configuration}`,
       allInPrice: unit.allInPrice,
     })),
+    openBooking: booking
+      ? {
+          id: booking.id,
+          reference: booking.reference,
+          status: booking.status,
+          unitLabel: [booking.tower, booking.unitNumber, booking.configuration]
+            .filter(Boolean)
+            .join(" · "),
+          agreementValue: booking.agreementValue,
+          tokenAmount: booking.tokenAmount,
+        }
+      : null,
   };
 }
 
@@ -273,6 +323,31 @@ export async function recordBookingFromBoard(
     };
   }
   return { ok: true, message: "Booking recorded" };
+}
+
+/**
+ * Confirms the booking this lead already has, rather than opening a second one.
+ *
+ * The board asks for `booked` in two quite different situations: a lead with no
+ * booking yet, which needs one created, and a lead sitting on a token payment,
+ * which needs the existing booking advanced. Both used to run the create path,
+ * so the second case failed on "the lead or unit already has an active booking"
+ * with no way forward from the board at all.
+ */
+export async function confirmBookingFromBoard(
+  _previous: StageAdvanceState,
+  formData: FormData,
+): Promise<StageAdvanceState> {
+  try {
+    await advanceBookingAction(formData);
+  } catch (error) {
+    if (isRedirect(error)) throw error;
+    return {
+      ok: false,
+      message: error instanceof Error ? error.message : "The booking could not be confirmed",
+    };
+  }
+  return { ok: true, message: "Booking confirmed" };
 }
 
 export async function setProjectFromBoard(

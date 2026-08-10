@@ -41,6 +41,57 @@ function zonedParts(date: Date, timeZone: string) {
   };
 }
 
+const pad = (value: number, width = 2) => String(value).padStart(width, "0");
+
+/** Render an instant as the `datetime-local` string an input expects, in `timeZone`. */
+export function toLocalDateTimeInput(date: Date, timeZone: string): string {
+  const parts = zonedParts(date, timeZone);
+  return `${pad(parts.year, 4)}-${pad(parts.month)}-${pad(parts.day)}T${pad(parts.hour)}:${pad(parts.minute)}`;
+}
+
+/**
+ * Move a wall-clock value by whole days, optionally pinning the time of day.
+ *
+ * Deliberately calendar arithmetic rather than millisecond arithmetic: "the day
+ * after tomorrow at 10am" must stay 10am across a daylight-saving boundary, and
+ * the value is re-anchored to a real instant later anyway, by whoever parses it
+ * in the user's timezone.
+ */
+export function shiftLocalDateTime(
+  value: string,
+  { days = 0, hour, minute = 0 }: { days?: number; hour?: number; minute?: number },
+): string | null {
+  const parts = localParts(value);
+  if (!parts) return null;
+  const shifted = new Date(
+    Date.UTC(parts.year, parts.month - 1, parts.day + days, hour ?? parts.hour, hour === undefined ? parts.minute : minute),
+  );
+  return [
+    `${pad(shifted.getUTCFullYear(), 4)}-${pad(shifted.getUTCMonth() + 1)}-${pad(shifted.getUTCDate())}`,
+    `${pad(shifted.getUTCHours())}:${pad(shifted.getUTCMinutes())}`,
+  ].join("T");
+}
+
+/**
+ * Human-readable form of a wall-clock value — "Tue, 12 Aug, 10:00 am".
+ *
+ * Formats the value as written rather than converting it, because a
+ * `datetime-local` string has no timezone to convert from.
+ */
+export function describeLocalDateTime(value: string): string | null {
+  const parts = localParts(value);
+  if (!parts) return null;
+  const asUtc = new Date(Date.UTC(parts.year, parts.month - 1, parts.day, parts.hour, parts.minute));
+  return new Intl.DateTimeFormat("en-IN", {
+    timeZone: "UTC",
+    weekday: "short",
+    day: "numeric",
+    month: "short",
+    hour: "numeric",
+    minute: "2-digit",
+  }).format(asUtc);
+}
+
 /** Convert a browser `datetime-local` value into its real UTC instant. */
 export function parseLocalDateTime(value: string, timeZone: string): Date | null {
   const wanted = localParts(value);

@@ -1,0 +1,41 @@
+import { describe, expect, it } from "vitest";
+import { buildCallTarget } from "./call";
+
+describe("buildCallTarget", () => {
+  it("returns nothing without a number", () => {
+    expect(buildCallTarget(null)).toBeNull();
+    expect(buildCallTarget("   ")).toBeNull();
+  });
+
+  it("keeps the country code on a stored E.164 number", () => {
+    const target = buildCallTarget("+919381167516");
+    expect(target?.e164).toBe("+919381167516");
+    expect(target?.tel).toBe("tel:+919381167516");
+    expect(target?.countryCode).toBe("+91");
+  });
+
+  it("adds the country code to a bare ten-digit number", () => {
+    // A scanner has no default region, so the QR must carry the +91 itself.
+    expect(buildCallTarget("9381167516")?.tel).toBe("tel:+919381167516");
+  });
+
+  it("groups the display number after the country code", () => {
+    expect(buildCallTarget("+919381167516")?.display).toBe("+91 93811 67516");
+  });
+
+  it("allows a landline that lead capture would have rejected", () => {
+    expect(buildCallTarget("+914023456789")?.e164).toBe("+914023456789");
+  });
+
+  it("still dials an unparseable stored number", () => {
+    const target = buildCallTarget("+1 555 0100 9999 8");
+    expect(target?.tel).toBe("tel:+1555010099998");
+    expect(target?.display).toBe("+1555010099998");
+  });
+
+  it("produces a square QR matrix that encodes something", () => {
+    const target = buildCallTarget("+919381167516");
+    expect(target?.qrSize).toBeGreaterThanOrEqual(21);
+    expect(target?.qrPath.length).toBeGreaterThan(0);
+  });
+});

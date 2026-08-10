@@ -23,10 +23,10 @@ export async function LeadCommercialPanel({ orgId, leadId, writable }: { orgId: 
   const data = await getLeadCommercialPanel(orgId, leadId);
   if (!data || !data.lead.projectId) return null;
   return (
-    // `items-start` stops the shorter card stretching to its neighbour's
-    // height, which was padding a nearly-empty panel out to 800px and leaving
-    // its form marooned at the bottom of a void.
-    <div className="grid items-start gap-5 md:grid-cols-2">
+    // A fragment, not a grid: these two join the lead page's masonry so they
+    // flow into whatever column has room, instead of forming a third band with
+    // its own private alignment problem.
+    <>
       <Card title="Unit shortlist" subtitle={data.lead.projectName ?? "Opportunity project"}>
         {data.shortlist.length === 0 ? <PanelEmpty title="No units shortlisted" hint="Shortlist the units this buyer actually reacted to." /> : <ul className="divide-y divide-zinc-100 dark:divide-zinc-800">{data.shortlist.map((unit) => <li key={unit.id} className="flex items-center justify-between gap-3 px-5 py-3"><div><p className="text-sm font-semibold">{[unit.tower, unit.unitNumber].filter(Boolean).join(" · ")}</p><p className="text-xs text-zinc-500">{unit.configuration} · {formatINR(unit.allInPrice, true)} · {unit.status.replace(/_/g, " ")}</p>{unit.notes && <p className="mt-1 text-xs text-zinc-500">{unit.notes}</p>}</div>{writable && <form action={removeUnitFromShortlist}><input type="hidden" name="leadId" value={leadId} /><input type="hidden" name="interestId" value={unit.id} /><SubmitButton variant="secondary">Remove</SubmitButton></form>}</li>)}</ul>}
         {writable && data.available.length > 0 && <form action={addUnitToShortlist} className="space-y-2 border-t border-zinc-100 p-5 dark:border-zinc-800"><input type="hidden" name="leadId" value={leadId} /><select name="unitId" required className={fieldClass}><option value="">Choose available unit…</option>{data.available.map((unit) => <option key={unit.id} value={unit.id}>{[unit.tower, unit.unitNumber].filter(Boolean).join(" · ")} · {unit.configuration} · {formatINR(unit.allInPrice, true)}</option>)}</select><input name="notes" maxLength={500} placeholder="Why this unit fits…" className={fieldClass} /><SubmitButton className="w-full">Add to shortlist</SubmitButton></form>}
@@ -36,6 +36,6 @@ export async function LeadCommercialPanel({ orgId, leadId, writable }: { orgId: 
         {data.offers.length === 0 ? <PanelEmpty title="No offers recorded" hint="Every counter-offer, in the order it happened." /> : <ul className="max-h-72 divide-y divide-zinc-100 overflow-y-auto dark:divide-zinc-800">{data.offers.map((offer) => { const meta = offer.metadata ?? {}; return <li key={offer.id} className="px-5 py-3"><div className="flex items-center justify-between gap-2"><p className="text-sm font-semibold capitalize">{String(meta.side ?? "offer")} · {formatINR(String(meta.amount ?? ""), true)}</p><span className="rounded bg-zinc-100 px-1.5 py-0.5 text-[10px] font-semibold uppercase text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300">{String(meta.status ?? "open")}</span></div>{offer.body && <p className="mt-1 text-xs text-zinc-500">{offer.body}</p>}<p className="mt-1 text-[10px] text-zinc-400">{offer.userName ?? "User"} · {formatDateTime(offer.occurredAt)}</p></li>; })}</ul>}
         {writable && <form action={recordNegotiationOffer} className="space-y-2 border-t border-zinc-100 p-5 dark:border-zinc-800"><input type="hidden" name="leadId" value={leadId} /><div className="grid grid-cols-2 gap-2"><select name="side" className={fieldClass}><option value="customer">Customer offer</option><option value="company">Company offer</option></select><select name="status" className={fieldClass}><option value="open">Open</option><option value="accepted">Accepted</option><option value="rejected">Rejected</option><option value="withdrawn">Withdrawn</option></select></div><select name="unitId" className={fieldClass}><option value="">No unit specified</option>{data.shortlist.map((unit) => <option key={unit.unitId} value={unit.unitId}>{[unit.tower, unit.unitNumber].filter(Boolean).join(" · ")}</option>)}</select><input name="amount" type="number" min="0.01" step="0.01" required placeholder="Offer amount (INR)" className={fieldClass} /><textarea name="terms" maxLength={2000} rows={2} placeholder="Payment plan, inclusions, validity…" className={fieldClass} /><SubmitButton className="w-full">Record offer</SubmitButton></form>}
       </Card>
-    </div>
+    </>
   );
 }

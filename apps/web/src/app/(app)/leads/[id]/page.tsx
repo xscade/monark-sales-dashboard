@@ -149,9 +149,9 @@ export default async function LeadDetailPage({ params }: { params: Promise<{ id:
         </div>
       </div>
 
-      <div className="grid gap-5 lg:grid-cols-3">
-        <div className="space-y-5 lg:col-span-2">
-          <Card title="Timeline" subtitle={`${timeline.length} events`}>
+      {/* The timeline is the narrative and can run to hundreds of events, so it
+          keeps the full width and stays out of the balanced flow below. */}
+      <Card title="Timeline" subtitle={`${timeline.length} events`}>
             {timeline.length === 0 ? (
               <EmptyState title="Nothing logged yet" />
             ) : (
@@ -182,8 +182,16 @@ export default async function LeadDetailPage({ params }: { params: Promise<{ id:
                 ))}
               </ol>
             )}
-          </Card>
+      </Card>
 
+      {/*
+        Everything below is a self-contained card of unpredictable height, so a
+        fixed two-column split always stranded one side: six cards on the right
+        against two on the left left a screen-high void under Log activity.
+        CSS multi-column balances the heights instead, letting cards stack into
+        whichever column has room — no card is pinned to a side any more.
+      */}
+      <div className="gap-5 sm:columns-2 xl:columns-3 [&>*]:mb-5 [&>*]:break-inside-avoid">
           {writable && <Card title="Log activity">
             <form action={logActivity} className="space-y-3 p-5">
               <input type="hidden" name="leadId" value={lead.id} />
@@ -225,9 +233,7 @@ export default async function LeadDetailPage({ params }: { params: Promise<{ id:
               <SubmitButton>Save activity</SubmitButton>
             </form>
           </Card>}
-        </div>
 
-        <div className="space-y-5">
           <Card title="Attribution" subtitle="Frozen at first touch — never overwritten">
             {!firstTouch ? (
               <EmptyState title="No touchpoint recorded" />
@@ -433,10 +439,9 @@ export default async function LeadDetailPage({ params }: { params: Promise<{ id:
               </form>
             ) : !qualification ? <EmptyState title="Not qualified yet" /> : null}
           </Card>
-        </div>
-      </div>
 
-      <LeadCommercialPanel orgId={user.orgId} leadId={lead.id} writable={writable} />
+          <LeadCommercialPanel orgId={user.orgId} leadId={lead.id} writable={writable} />
+      </div>
     </div>
   );
 }

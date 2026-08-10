@@ -1,111 +1,142 @@
-import { getDb } from "@monark/db";
-import { sql } from "drizzle-orm";
-import { revalidatePath } from "next/cache";
-import { requirePermission } from "@/lib/auth";
-import { Card, DataTable, EmptyState, SubmitButton, Td, Th } from "@/components/ui";
-import { formatRelative } from "@/lib/format";
+import Link from "next/link";
+import { Card, EmptyState, SubmitButton } from "@/components/ui";
+import { updateDestination } from "@/lib/admin-actions";
+import { getSettingsOverview } from "@/lib/admin-queries";
+import { SettingsFlash } from "./settings-flash";
 
 export const dynamic = "force-dynamic";
 
-/**
- * Toggle a destination's enabled / dry-run state.
- *
- * Enabling a destination is the single most consequential switch in the
- * product: a conversion cannot be retracted once a platform records it, and a
- * week of malformed events degrades Smart Bidding for longer than it takes to
- * notice. Hence the confirmation copy and the deliberate ordering — verify
- * payloads in dry run first, then enable.
- */
-async function updateDestination(formData: FormData) {
-  "use server";
-  const user = await requirePermission("settings:write");
-  const id = String(formData.get("id"));
-  const field = String(formData.get("field"));
-  const value = String(formData.get("value")) === "true";
+const sections = [
+  {
+    href: "/settings/users",
+    title: "Users",
+    description: "Roles, routing capacity and account access",
+    countKey: "users" as const,
+    countLabel: "active users",
+  },
+  {
+    href: "/settings/projects",
+    title: "Projects",
+    description: "Project identity, RERA details and value modelling",
+    countKey: "projects" as const,
+    countLabel: "active projects",
+  },
+  {
+    href: "/settings/api",
+    title: "API access",
+    description: "Create project-scoped ingestion keys and revoke access",
+    countKey: "apiKeys" as const,
+    countLabel: "active keys",
+  },
+  {
+    href: "/settings/sources",
+    title: "Lead sources",
+    description: "Website endpoint, tracking snippet and source health",
+    countKey: null,
+    countLabel: "capture settings",
+  },
+  {
+    href: "/settings/integrations",
+    title: "Meta & Google",
+    description: "Credentials, destination configuration and event mappings",
+    countKey: null,
+    countLabel: "integration settings",
+  },
+];
 
-  if (field !== "is_enabled" && field !== "dry_run") throw new Error("Unknown field");
-
-  const db = getDb();
-  await db.execute(
-    field === "is_enabled"
-      ? sql`UPDATE conversion_destinations SET is_enabled = ${value}, updated_at = now()
-            WHERE id = ${id} AND org_id = ${user.orgId}`
-      : sql`UPDATE conversion_destinations SET dry_run = ${value}, updated_at = now()
-            WHERE id = ${id} AND org_id = ${user.orgId}`,
-  );
-
-  await db.execute(sql`
-    INSERT INTO audit_logs (id, org_id, actor_user_id, actor_type, action, entity_type, entity_id, after)
-    VALUES (gen_random_uuid(), ${user.orgId}, ${user.id}, 'user',
-            ${`destination.${field}_changed`}, 'conversion_destination', ${id},
-            ${JSON.stringify({ [field]: value })}::jsonb)
-  `);
-
-  revalidatePath("/settings");
-  revalidatePath("/conversions");
-}
-
-export default async function SettingsPage() {
-  const user = await requirePermission("settings:write");
-  const db = getDb();
-
-  const [keysRes, destRes, projectsRes] = await Promise.all([
-    db.execute(sql`
-      SELECT id, name, key_prefix AS "keyPrefix", scopes, last_used_at AS "lastUsedAt",
-             revoked_at AS "revokedAt", created_at AS "createdAt"
-      FROM api_keys WHERE org_id = ${user.orgId} ORDER BY created_at DESC
-    `),
-    db.execute(sql`
-      SELECT id, platform::text AS platform, name, is_enabled AS "isEnabled",
-             dry_run AS "dryRun", config
-      FROM conversion_destinations WHERE org_id = ${user.orgId} ORDER BY platform
-    `),
-    db.execute(sql`
-      SELECT id, name, city, rera_number AS "reraNumber", avg_sale_value AS "avgSaleValue"
-      FROM projects WHERE org_id = ${user.orgId} ORDER BY name
-    `),
-  ]);
-
-  const keys = keysRes.rows as any[];
-  const destinations = destRes.rows as any[];
-  const projects = projectsRes.rows as any[];
+export default async function SettingsPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ notice?: string; error?: string }>;
+}) {
+  const messages = await searchParams;
+  const { counts, destinations } = await getSettingsOverview();
 
   return (
     <div className="space-y-5">
       <div>
         <h1 className="text-xl font-semibold">Settings</h1>
-        <p className="mt-0.5 text-sm text-zinc-500">Integrations, API access and projects</p>
+        <p className="mt-0.5 text-sm text-zinc-500">
+          Manage organisation access, projects and external data flows
+        </p>
+      </div>
+
+      <SettingsFlash notice={messages.notice} error={messages.error} />
+
+      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-5">
+        {sections.map((section) => (
+          <Link
+            key={section.href}
+            href={section.href}
+            className="rounded-xl border border-zinc-200 bg-white p-5 transition hover:border-brand-400 hover:shadow-sm dark:border-zinc-800 dark:bg-zinc-900"
+          >
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <h2 className="text-sm font-semibold">{section.title}</h2>
+                <p className="mt-1 text-xs leading-5 text-zinc-500">{section.description}</p>
+              </div>
+              <span aria-hidden="true" className="text-zinc-400">
+                →
+              </span>
+            </div>
+            <p className="mt-5 text-xs text-zinc-500">
+              <span className="tabular text-base font-semibold text-zinc-900 dark:text-zinc-100">
+                {section.countKey ? counts[section.countKey] : "Configure"}
+              </span>{" "}
+              {section.countLabel}
+            </p>
+          </Link>
+        ))}
       </div>
 
       <Card
         title="Conversion destinations"
-        subtitle="Verify payloads in dry run before enabling — a sent conversion cannot be retracted"
+        subtitle="Validate payloads in dry run before going live. Sent conversions cannot be retracted."
       >
         {destinations.length === 0 ? (
-          <EmptyState title="No destinations" hint="Run pnpm db:seed to create them." />
+          <EmptyState title="No destinations configured" />
         ) : (
           <ul className="divide-y divide-zinc-100 dark:divide-zinc-800">
-            {destinations.map((d) => (
-              <li key={d.id} className="flex flex-wrap items-center justify-between gap-3 px-5 py-4">
+            {destinations.map((destination) => (
+              <li
+                key={destination.id}
+                className="flex flex-wrap items-center justify-between gap-3 px-5 py-4"
+              >
                 <div>
-                  <p className="text-sm font-medium">{d.name}</p>
-                  <p className="text-xs text-zinc-500">{d.platform}</p>
+                  <p className="text-sm font-medium">{destination.name}</p>
+                  <p className="mt-0.5 text-xs text-zinc-500">
+                    {destination.platform.replace(/_/g, " ")} ·{" "}
+                    {destination.isEnabled ? "enabled" : "disabled"} ·{" "}
+                    {destination.dryRun ? "dry run" : "live delivery"}
+                  </p>
                 </div>
                 <div className="flex flex-wrap items-center gap-2">
                   <form action={updateDestination}>
-                    <input type="hidden" name="id" value={d.id} />
+                    <input type="hidden" name="id" value={destination.id} />
                     <input type="hidden" name="field" value="dry_run" />
-                    <input type="hidden" name="value" value={String(!d.dryRun)} />
+                    <input type="hidden" name="value" value={String(!destination.dryRun)} />
+                    {destination.dryRun && (
+                      <label className="mb-2 flex max-w-56 items-start gap-2 text-xs text-zinc-500">
+                        <input required type="checkbox" name="confirmation" value="confirmed" className="mt-0.5" />
+                        I understand live conversions cannot be retracted.
+                      </label>
+                    )}
                     <SubmitButton variant="secondary">
-                      {d.dryRun ? "Dry run — go live" : "Live — switch to dry run"}
+                      {destination.dryRun ? "Switch to live" : "Switch to dry run"}
                     </SubmitButton>
                   </form>
                   <form action={updateDestination}>
-                    <input type="hidden" name="id" value={d.id} />
+                    <input type="hidden" name="id" value={destination.id} />
                     <input type="hidden" name="field" value="is_enabled" />
-                    <input type="hidden" name="value" value={String(!d.isEnabled)} />
-                    <SubmitButton variant={d.isEnabled ? "danger" : "primary"}>
-                      {d.isEnabled ? "Disable" : "Enable"}
+                    <input type="hidden" name="value" value={String(!destination.isEnabled)} />
+                    {!destination.isEnabled && (
+                      <label className="mb-2 flex max-w-56 items-start gap-2 text-xs text-zinc-500">
+                        <input required type="checkbox" name="confirmation" value="confirmed" className="mt-0.5" />
+                        Config, credentials and mappings are ready.
+                      </label>
+                    )}
+                    <SubmitButton variant={destination.isEnabled ? "danger" : "primary"}>
+                      {destination.isEnabled ? "Disable" : "Enable"}
                     </SubmitButton>
                   </form>
                 </div>
@@ -115,76 +146,10 @@ export default async function SettingsPage() {
         )}
       </Card>
 
-      <Card title="API keys" subtitle="Used by the website and any agency posting to /v1/leads">
-        {keys.length === 0 ? (
-          <EmptyState title="No API keys" hint="Created by the seed script; the secret is shown once." />
-        ) : (
-          <DataTable>
-            <thead className="border-b border-zinc-100 dark:border-zinc-800">
-              <tr>
-                <Th>Name</Th>
-                <Th>Prefix</Th>
-                <Th>Scopes</Th>
-                <Th>Last used</Th>
-                <Th>Status</Th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-zinc-100 dark:divide-zinc-800">
-              {keys.map((k) => (
-                <tr key={k.id}>
-                  <Td className="font-medium">{k.name}</Td>
-                  {/* Only the prefix is ever stored — the secret is hashed. */}
-                  <Td className="tabular text-xs text-zinc-500">{k.keyPrefix}…</Td>
-                  <Td className="text-xs text-zinc-500">{(k.scopes ?? []).join(", ")}</Td>
-                  <Td className="text-xs text-zinc-500">{formatRelative(k.lastUsedAt)}</Td>
-                  <Td>
-                    <span
-                      className={`rounded px-1.5 py-0.5 text-xs ${
-                        k.revokedAt
-                          ? "bg-red-100 text-red-700 dark:bg-red-950 dark:text-red-300"
-                          : "bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300"
-                      }`}
-                    >
-                      {k.revokedAt ? "Revoked" : "Active"}
-                    </span>
-                  </Td>
-                </tr>
-              ))}
-            </tbody>
-          </DataTable>
-        )}
-      </Card>
-
-      <Card title="Projects">
-        {projects.length === 0 ? (
-          <EmptyState title="No projects" />
-        ) : (
-          <DataTable>
-            <thead className="border-b border-zinc-100 dark:border-zinc-800">
-              <tr>
-                <Th>Project</Th>
-                <Th>City</Th>
-                <Th>RERA</Th>
-                <Th className="text-right">Avg sale value</Th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-zinc-100 dark:divide-zinc-800">
-              {projects.map((p) => (
-                <tr key={p.id}>
-                  <Td className="font-medium">{p.name}</Td>
-                  <Td className="text-zinc-500">{p.city ?? "—"}</Td>
-                  <Td className="tabular text-xs text-zinc-500">{p.reraNumber ?? "—"}</Td>
-                  {/* Feeds the conversion value model: expected value =
-                      P(booking | stage) × this. */}
-                  <Td className="tabular text-right">
-                    {p.avgSaleValue ? `₹${Number(p.avgSaleValue).toLocaleString("en-IN")}` : "—"}
-                  </Td>
-                </tr>
-              ))}
-            </tbody>
-          </DataTable>
-        )}
-      </Card>
+      <p className="text-xs leading-5 text-zinc-500">
+        Destination state changes are audited here. Credentials and event mappings are managed in
+        Meta & Google integrations and are never returned after replacement.
+      </p>
     </div>
   );
 }

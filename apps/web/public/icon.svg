@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Monark Sales">
+  <rect width="512" height="512" rx="112" fill="#17322d"/>
+  <path d="M116 358V154h58l82 116 82-116h58v204h-62V249l-78 105-78-105v109z" fill="#f8f7f3"/>
+  <circle cx="396" cy="116" r="42" fill="#f6c85f"/>
+</svg>

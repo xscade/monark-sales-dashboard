@@ -1,8 +1,12 @@
+import { sql } from "drizzle-orm";
 import {
   boolean,
+  check,
   index,
+  integer,
   jsonb,
   pgTable,
+  primaryKey,
   text,
   timestamp,
   uniqueIndex,
@@ -95,6 +99,10 @@ export const apiKeys = pgTable(
     scopes: jsonb("scopes").$type<string[]>().notNull().default(["leads:write"]),
     /** Restrict a key to one project — useful when handing a key to an agency. */
     projectId: uuid("project_id").references(() => projects.id, { onDelete: "set null" }),
+    /** Browser keys can use bearer auth only. Server keys must also provide a
+     *  valid HMAC signature for every request. */
+    keyPolicy: text("key_policy").$type<"browser" | "server">().notNull().default("browser"),
+    signatureRequired: boolean("signature_required").notNull().default(false),
     rateLimitPerMinute: text("rate_limit_per_minute").notNull().default("120"),
     lastUsedAt: timestamp("last_used_at", { withTimezone: true }),
     revokedAt: timestamp("revoked_at", { withTimezone: true }),
@@ -103,6 +111,40 @@ export const apiKeys = pgTable(
   (t) => [
     uniqueIndex("api_keys_prefix_idx").on(t.keyPrefix),
     index("api_keys_org_idx").on(t.orgId),
+    check(
+      "api_keys_policy_signature_check",
+      sql`(${t.keyPolicy} = 'browser' AND ${t.signatureRequired} = false)
+          OR (${t.keyPolicy} = 'server' AND ${t.signatureRequired} = true)`,
+    ),
+  ],
+);
+
+/**
+ * Database-backed fixed-window buckets for public API throttling.
+ *
+ * The old process-local Map multiplied the effective rate limit by the number
+ * of Vercel instances. A composite primary key gives every replica one atomic
+ * counter for a key/minute instead.
+ */
+export const apiRateLimitBuckets = pgTable(
+  "api_rate_limit_buckets",
+  {
+    orgId: uuid("org_id")
+      .notNull()
+      .references(() => orgs.id, { onDelete: "cascade" }),
+    apiKeyId: uuid("api_key_id")
+      .notNull()
+      .references(() => apiKeys.id, { onDelete: "cascade" }),
+    windowStart: timestamp("window_start", { withTimezone: true }).notNull(),
+    requestCount: integer("request_count").notNull().default(0),
+  },
+  (t) => [
+    primaryKey({
+      name: "api_rate_limit_buckets_pk",
+      columns: [t.apiKeyId, t.windowStart],
+    }),
+    index("api_rate_limit_buckets_org_window_idx").on(t.orgId, t.windowStart),
+    check("api_rate_limit_buckets_count_check", sql`${t.requestCount} >= 0`),
   ],
 );
 

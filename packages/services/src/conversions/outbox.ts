@@ -28,7 +28,7 @@ import {
   conversionDestinations,
   type Database,
 } from "@monark/db";
-import { eq, inArray, sql } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import { randomUUID } from "node:crypto";
 import { decryptCredentials } from "../crypto";
 
@@ -231,6 +231,7 @@ function buildAdapter(destination: {
   credentialsEncrypted: string | null;
   dryRun: boolean;
   eventNameMap: Partial<Record<ConversionEventType, string>>;
+  destinationIdMap: Partial<Record<ConversionEventType, string>>;
 }): ConversionAdapter {
   const credentials = destination.credentialsEncrypted
     ? decryptCredentials(destination.credentialsEncrypted)
@@ -262,6 +263,7 @@ function buildAdapter(destination: {
       }),
       dryRun: destination.dryRun,
       eventNameMap: destination.eventNameMap,
+      destinationIdMap: destination.destinationIdMap,
     });
   }
 
@@ -347,7 +349,12 @@ export async function processOutbox(
     const [destination] = await db
       .select()
       .from(conversionDestinations)
-      .where(eq(conversionDestinations.id, destinationId))
+      .where(
+        and(
+          eq(conversionDestinations.id, destinationId),
+          eq(conversionDestinations.orgId, deliveries[0]!.orgId),
+        ),
+      )
       .limit(1);
 
     if (!destination) {
@@ -358,15 +365,29 @@ export async function processOutbox(
 
     const mappings = await db.execute(sql`
       SELECT event_type::text AS "eventType",
-             platform_event_name AS "platformEventName"
+             platform_event_name AS "platformEventName",
+             platform_destination_id AS "platformDestinationId"
       FROM conversion_event_mappings
-      WHERE destination_id = ${destinationId} AND is_enabled = true
+      WHERE destination_id = ${destinationId}
+        AND org_id = ${destination.orgId}
+        AND is_enabled = true
     `);
+    type MappingRow = {
+      eventType: string;
+      platformEventName: string;
+      platformDestinationId: string | null;
+    };
+    const mappingRows = mappings.rows as MappingRow[];
     const eventNameMap = Object.fromEntries(
-      (mappings.rows as { eventType: string; platformEventName: string }[]).map((m) => [
+      mappingRows.map((m) => [
         m.eventType,
         m.platformEventName,
       ]),
+    ) as Partial<Record<ConversionEventType, string>>;
+    const destinationIdMap = Object.fromEntries(
+      mappingRows
+        .filter((mapping) => Boolean(mapping.platformDestinationId))
+        .map((mapping) => [mapping.eventType, mapping.platformDestinationId!]),
     ) as Partial<Record<ConversionEventType, string>>;
 
     // ---------------------------------------------------------------
@@ -437,6 +458,7 @@ export async function processOutbox(
         credentialsEncrypted: destination.credentialsEncrypted,
         dryRun: destination.dryRun,
         eventNameMap,
+        destinationIdMap,
       });
     } catch (err) {
       await markPermanent(db, sendable, err instanceof Error ? err.message : String(err));

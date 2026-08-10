@@ -1,10 +1,16 @@
-import { getDb, idempotencyKeys } from "@monark/db";
+import { apiKeys, getDb, idempotencyKeys } from "@monark/db";
 import { decryptCredentials, ingestLead } from "@monark/services";
 import { createHash } from "node:crypto";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { Hono } from "hono";
 import { cors } from "hono/cors";
-import { authenticate, checkRateLimit, verifySignature } from "./auth";
+import {
+  authenticate,
+  consumeRateLimit,
+  isRequiredSignatureMissing,
+  verifySignature,
+} from "./auth";
+import { readBoundedRequestBody, RequestBodyError } from "./body";
 import { runOutboxDrain } from "./cron";
 import { LeadIngestSchema } from "./schemas";
 
@@ -74,15 +80,32 @@ app.post("/v1/leads", async (c) => {
   if (!key.scopes.includes("leads:write")) {
     return c.json({ error: "API key lacks the leads:write scope" }, 403);
   }
-  if (!checkRateLimit(key.id, key.rateLimitPerMinute)) {
+  if (!(await consumeRateLimit(db, key.id, key.orgId, key.rateLimitPerMinute))) {
     return c.json({ error: "Rate limit exceeded" }, 429);
+  }
+
+  const signatureHeader = c.req.header("X-Monark-Signature");
+  if (isRequiredSignatureMissing(key, signatureHeader)) {
+    return c.json({ error: "Missing X-Monark-Signature for server API key" }, 401);
   }
 
   // Read the raw body once — HMAC must be computed over the exact bytes sent,
   // not over a re-serialised object, which would reorder keys and never match.
-  const rawBody = await c.req.text();
+  // The streaming reader stops at 64 KiB instead of allowing Request.text() to
+  // buffer an attacker-controlled payload without bound.
+  let rawBody: string;
+  let rawBodyBytes: Uint8Array;
+  try {
+    const body = await readBoundedRequestBody(c.req.raw);
+    rawBody = body.text;
+    rawBodyBytes = body.bytes;
+  } catch (error) {
+    if (error instanceof RequestBodyError) {
+      return c.json({ error: error.message }, error.status);
+    }
+    throw error;
+  }
 
-  const signatureHeader = c.req.header("X-Monark-Signature");
   if (signatureHeader) {
     let secret: string;
     try {
@@ -90,11 +113,13 @@ app.post("/v1/leads", async (c) => {
     } catch {
       return c.json({ error: "Signing secret unavailable for this key" }, 500);
     }
-    const verified = verifySignature({ header: signatureHeader, rawBody, secret });
+    const verified = verifySignature({ header: signatureHeader, rawBody: rawBodyBytes, secret });
     if (!verified.ok) {
       return c.json({ error: verified.error }, 401);
     }
   }
+
+  await db.update(apiKeys).set({ lastUsedAt: new Date() }).where(eq(apiKeys.id, key.id));
 
   let parsedJson: unknown;
   try {
@@ -117,6 +142,11 @@ app.post("/v1/leads", async (c) => {
     );
   }
   const input = parsed.data;
+  if (key.projectId && input.project_id && input.project_id !== key.projectId) {
+    return c.json({ error: "API key is scoped to a different project" }, 403);
+  }
+  const effectiveProjectId = key.projectId ?? input.project_id ?? null;
+  const ledgerEndpoint = `POST /v1/leads:key:${key.id}:project:${effectiveProjectId ?? "org"}`;
 
   // -------------------------------------------------------------------
   // Idempotency
@@ -127,42 +157,67 @@ app.post("/v1/leads", async (c) => {
   // that is a caller bug that would otherwise silently drop data.
   // -------------------------------------------------------------------
   const idempotencyKey = c.req.header("Idempotency-Key");
-  const requestHash = createHash("sha256").update(rawBody).digest("hex");
-
-  if (idempotencyKey) {
-    const [existing] = await db
-      .select()
-      .from(idempotencyKeys)
-      .where(
-        and(
-          eq(idempotencyKeys.orgId, key.orgId),
-          eq(idempotencyKeys.key, idempotencyKey),
-          eq(idempotencyKeys.endpoint, "POST /v1/leads"),
-        ),
-      )
-      .limit(1);
-
-    if (existing) {
-      if (existing.requestHash !== requestHash) {
-        return c.json(
-          { error: "Idempotency-Key was reused with a different request body" },
-          409,
-        );
-      }
-      return c.json(existing.responseBody as object, Number(existing.responseStatus) as 200);
-    }
-  }
+  const requestHash = createHash("sha256").update(rawBodyBytes).digest("hex");
 
   const forwardedFor = c.req.header("X-Forwarded-For");
   const ipAddress = forwardedFor?.split(",")[0]?.trim() ?? null;
 
   try {
-    const result = await db.transaction((tx) =>
-      ingestLead(tx, {
+    const outcome = await db.transaction(async (tx) => {
+      if (effectiveProjectId) {
+        const project = await tx.execute(sql`
+          SELECT id FROM projects
+          WHERE id = ${effectiveProjectId}
+            AND org_id = ${key.orgId}
+            AND is_active = true
+          FOR SHARE
+        `);
+        if (!project.rows[0]) return { kind: "invalid_project" as const };
+      }
+      if (idempotencyKey) {
+        // Serialise requests for the same org/endpoint/key before checking the
+        // ledger. This closes the race where two retries could both pass the
+        // old check-then-insert sequence and create duplicate touchpoints.
+        await tx.execute(sql`
+          SELECT pg_advisory_xact_lock(
+            hashtextextended(${`${key.orgId}:${ledgerEndpoint}:${idempotencyKey}`}, 0)
+          )
+        `);
+        await tx.execute(sql`
+          DELETE FROM idempotency_keys
+          WHERE org_id = ${key.orgId}
+            AND key = ${idempotencyKey}
+            AND endpoint = ${ledgerEndpoint}
+            AND expires_at <= now()
+        `);
+        const [existing] = await tx
+          .select()
+          .from(idempotencyKeys)
+          .where(
+            and(
+              eq(idempotencyKeys.orgId, key.orgId),
+              eq(idempotencyKeys.key, idempotencyKey),
+              eq(idempotencyKeys.endpoint, ledgerEndpoint),
+            ),
+          )
+          .limit(1);
+        if (existing) {
+          if (existing.requestHash !== requestHash) {
+            return { kind: "conflict" as const };
+          }
+          return {
+            kind: "replay" as const,
+            responseBody: existing.responseBody as Record<string, unknown>,
+            responseStatus: Number(existing.responseStatus),
+          };
+        }
+      }
+
+      const result = await ingestLead(tx, {
         orgId: key.orgId,
         // A project-scoped key pins the project so an agency cannot write into
         // the wrong development, deliberately or by accident.
-        projectId: key.projectId ?? input.project_id ?? null,
+        projectId: effectiveProjectId,
         name: input.name,
         phone: input.phone,
         email: input.email,
@@ -178,6 +233,20 @@ app.post("/v1/leads", async (c) => {
           content: input.utm_content,
           term: input.utm_term,
           id: input.utm_id,
+        },
+        adHierarchy: {
+          platform: input.ad_platform,
+          campaignId: input.campaign_id,
+          campaignName: input.campaign_name,
+          adsetId: input.adset_id,
+          adsetName: input.adset_name,
+          adId: input.ad_id,
+          adName: input.ad_name,
+          creativeId: input.creative_id,
+          creativeName: input.creative_name,
+          keyword: input.keyword,
+          matchType: input.match_type,
+          placement: input.placement,
         },
         clickIds: {
           gclid: input.gclid,
@@ -211,40 +280,40 @@ app.post("/v1/leads", async (c) => {
         notes: input.notes,
         timeOnPageSeconds: input.time_on_page_seconds,
         rawPayload: parsedJson,
-      }),
-    );
+      });
 
-    const responseBody = {
-      lead_id: result.leadId,
-      lead_reference: result.leadReference,
-      person_id: result.personId,
-      status: result.isNewLead ? "created" : "attached_to_existing",
-      is_duplicate: !result.isNewLead,
-      /** Surfaced so a caller can see when their form is being gamed. */
-      spam_score: result.spamScore,
-      /**
-       * When Google stops attributing offline conversions for this click.
-       * Exposed deliberately: it is the clock the whole feedback loop runs on.
-       */
-      attribution_expires_at: result.attributionExpiresAt?.toISOString() ?? null,
-    };
+      const responseBody = {
+        lead_id: result.leadId,
+        lead_reference: result.leadReference,
+        person_id: result.personId,
+        status: result.isNewLead ? "created" : "attached_to_existing",
+        is_duplicate: !result.isNewLead,
+        spam_score: result.spamScore,
+        attribution_expires_at: result.attributionExpiresAt?.toISOString() ?? null,
+      };
 
-    if (idempotencyKey) {
-      await db
-        .insert(idempotencyKeys)
-        .values({
+      if (idempotencyKey) {
+        await tx.insert(idempotencyKeys).values({
           orgId: key.orgId,
           key: idempotencyKey,
-          endpoint: "POST /v1/leads",
+          endpoint: ledgerEndpoint,
           requestHash,
           responseStatus: "200",
           responseBody,
           expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
-        })
-        .onConflictDoNothing();
-    }
+        });
+      }
 
-    return c.json(responseBody, 200);
+      return { kind: "created" as const, responseBody, responseStatus: 200 };
+    });
+
+    if (outcome.kind === "conflict") {
+      return c.json({ error: "Idempotency-Key was reused with a different request body" }, 409);
+    }
+    if (outcome.kind === "invalid_project") {
+      return c.json({ error: "Project is not active in this organisation" }, key.projectId ? 403 : 422);
+    }
+    return c.json(outcome.responseBody, outcome.responseStatus as 200);
   } catch (err) {
     console.error(
       JSON.stringify({

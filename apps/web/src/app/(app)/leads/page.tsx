@@ -1,10 +1,13 @@
 import Link from "next/link";
-import { requireUser } from "@/lib/auth";
+import { can, requirePermission } from "@/lib/auth";
 import { listLeads, listAgents, type LeadFilters } from "@/lib/queries";
 import { AttributionClock, Card, DataTable, EmptyState, SourceBadge, StageBadge, Td, Th } from "@/components/ui";
 import { formatDuration, formatNumber, formatRelative, maskPhoneDisplay } from "@/lib/format";
 import { LEAD_STAGES, TERMINAL_STAGES } from "@monark/core";
 import { stageLabel } from "@/lib/format";
+import { Button } from "@/components/ui/button";
+import { Plus } from "lucide-react";
+import { canViewSalesTeam, resolveSalesOwnerFilter } from "@/lib/sales-queries";
 
 export const dynamic = "force-dynamic";
 
@@ -15,13 +18,15 @@ export default async function LeadsPage({
 }: {
   searchParams: Promise<{ stage?: string; owner?: string; q?: string; page?: string }>;
 }) {
-  const user = await requireUser();
+  const user = await requirePermission("leads:read");
   const params = await searchParams;
   const page = Math.max(1, Number(params.page ?? 1) || 1);
+  const teamView = canViewSalesTeam(user.role);
+  const ownerId = resolveSalesOwnerFilter(user.role, user.id, params.owner);
 
   const filters: LeadFilters = {
     stage: params.stage,
-    ownerId: params.owner,
+    ownerId,
     search: params.q,
     limit: PAGE_SIZE,
     offset: (page - 1) * PAGE_SIZE,
@@ -29,7 +34,7 @@ export default async function LeadsPage({
 
   const [rows, agents] = await Promise.all([
     listLeads(user.orgId, filters),
-    listAgents(user.orgId),
+    teamView ? listAgents(user.orgId) : Promise.resolve([]),
   ]);
 
   const total = rows[0]?.totalCount ?? 0;
@@ -51,6 +56,8 @@ export default async function LeadsPage({
           <p className="mt-0.5 text-sm text-zinc-500">{formatNumber(total)} matching</p>
         </div>
 
+        <div className="flex flex-wrap items-center gap-2">
+        {can(user, "leads:write") && <Button asChild size="sm"><Link href="/leads/new"><Plus />Add lead</Link></Button>}
         <form method="get" className="flex flex-wrap items-center gap-2">
           <input
             type="search"
@@ -71,9 +78,9 @@ export default async function LeadsPage({
               </option>
             ))}
           </select>
-          <select
+          {teamView && <select
             name="owner"
-            defaultValue={params.owner ?? ""}
+            defaultValue={ownerId ?? ""}
             className="rounded-lg border border-zinc-300 bg-white px-2.5 py-1.5 text-sm dark:border-zinc-700 dark:bg-zinc-900"
           >
             <option value="">All owners</option>
@@ -82,7 +89,7 @@ export default async function LeadsPage({
                 {a.name}
               </option>
             ))}
-          </select>
+          </select>}
           <button
             type="submit"
             className="rounded-lg bg-brand-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-brand-700"
@@ -90,6 +97,7 @@ export default async function LeadsPage({
             Filter
           </button>
         </form>
+        </div>
       </div>
 
       <Card>

@@ -1,7 +1,8 @@
 import Link from "next/link";
 import { LEAD_STAGES } from "@monark/core";
-import { requireUser } from "@/lib/auth";
-import { getPipeline, listAgents } from "@/lib/queries";
+import { requirePermission } from "@/lib/auth";
+import { getPipeline } from "@/lib/queries";
+import { canViewSalesTeam, listSalesOwners, resolveSalesOwnerFilter } from "@/lib/sales-queries";
 import { AttributionClock } from "@/components/ui";
 import { formatNumber, formatRelative, maskPhoneDisplay, stageLabel } from "@/lib/format";
 
@@ -20,17 +21,17 @@ export default async function PipelinePage({
 }: {
   searchParams: Promise<{ owner?: string }>;
 }) {
-  const user = await requireUser();
+  const user = await requirePermission("leads:read");
   const params = await searchParams;
 
   // Agents default to their own board — a shared list of 400 leads is not a
   // work queue, it is wallpaper.
-  const ownerFilter =
-    params.owner ?? (user.role === "sales_agent" ? user.id : undefined);
+  const teamView = canViewSalesTeam(user.role);
+  const ownerFilter = resolveSalesOwnerFilter(user.role, user.id, params.owner);
 
   const [leads, agents] = await Promise.all([
     getPipeline(user.orgId, ownerFilter),
-    listAgents(user.orgId),
+    teamView ? listSalesOwners(user.orgId) : Promise.resolve([]),
   ]);
 
   const byStage = new Map<string, typeof leads>();
@@ -46,7 +47,7 @@ export default async function PipelinePage({
             {formatNumber(leads.length)} open leads
           </p>
         </div>
-        <form method="get">
+        {teamView && <form method="get">
           <select
             name="owner"
             defaultValue={ownerFilter ?? ""}
@@ -66,7 +67,7 @@ export default async function PipelinePage({
           >
             Apply
           </button>
-        </form>
+        </form>}
       </div>
 
       <div className="flex gap-3 overflow-x-auto pb-4">

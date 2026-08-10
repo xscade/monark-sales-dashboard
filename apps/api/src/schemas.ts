@@ -48,6 +48,22 @@ export const LeadIngestSchema = z
     utm_term: z.string().trim().max(300).optional(),
     utm_id: z.string().trim().max(200).optional(),
 
+    // Resolved hierarchy when the caller (lead webhook, agency backend or
+    // reporting sync) has stable platform ids. UTM fallbacks remain useful for
+    // browser forms, but ids are what make campaign/creative joins reliable.
+    ad_platform: z.enum(["meta", "google", "bing", "linkedin", "other"]).optional(),
+    campaign_id: z.string().trim().max(200).optional(),
+    campaign_name: z.string().trim().max(300).optional(),
+    adset_id: z.string().trim().max(200).optional(),
+    adset_name: z.string().trim().max(300).optional(),
+    ad_id: z.string().trim().max(200).optional(),
+    ad_name: z.string().trim().max(300).optional(),
+    creative_id: z.string().trim().max(200).optional(),
+    creative_name: z.string().trim().max(300).optional(),
+    keyword: z.string().trim().max(300).optional(),
+    match_type: z.string().trim().max(80).optional(),
+    placement: z.string().trim().max(160).optional(),
+
     // Click identifiers. Capture-or-lose-forever — there is no way to recover
     // these after the request that carried them.
     gclid: z.string().trim().max(500).optional(),

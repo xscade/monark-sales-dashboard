@@ -10,7 +10,7 @@ import {
   conversionEventMappings,
   conversionEvents,
 } from "@monark/db";
-import { and, eq } from "drizzle-orm";
+import { and, eq, isNull, or } from "drizzle-orm";
 import type { Tx } from "../types";
 
 export interface EmitConversionParams {
@@ -135,7 +135,14 @@ export async function emitConversionEvent(
     .where(
       and(
         eq(conversionDestinations.orgId, params.orgId),
+        eq(conversionEventMappings.orgId, params.orgId),
         eq(conversionDestinations.isEnabled, true),
+        params.projectId
+          ? or(
+              isNull(conversionDestinations.projectId),
+              eq(conversionDestinations.projectId, params.projectId),
+            )
+          : isNull(conversionDestinations.projectId),
         eq(conversionEventMappings.eventType, params.eventType),
         eq(conversionEventMappings.isEnabled, true),
       ),

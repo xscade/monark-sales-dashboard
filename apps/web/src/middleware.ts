@@ -56,7 +56,14 @@ export async function middleware(request: NextRequest) {
    * browser session check.
    */
   const isMachineEndpoint = path.startsWith("/v1") || path.startsWith("/api/");
-  const isPublic = path.startsWith("/login") || path.startsWith("/auth") || path === "/health";
+  const isPublic =
+    path.startsWith("/login") ||
+    path.startsWith("/auth") ||
+    path === "/health" ||
+    path === "/sw.js" ||
+    path === "/manifest.webmanifest" ||
+    path === "/offline.html" ||
+    path === "/monark.js";
 
   if (isMachineEndpoint) return response;
 

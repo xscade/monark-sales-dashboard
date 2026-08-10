@@ -74,12 +74,13 @@ api/                      Vercel entry points
 packages/
   core/          normalisation, hashing, identity resolution, stage machine,
                  attribution windows, eligibility gate, value model   [46 tests]
-  db/            Drizzle schema + migrations (28 tables), Supabase pooling
+  db/            Drizzle schema + migrations (31 tables), Supabase pooling
   connectors/    Meta CAPI + Google Data Manager adapters             [16 tests]
   services/      ingestLead, emitConversionEvent, outbox processor, crypto
   web-snippet/   drop-in JS that captures click IDs before they're lost
 apps/
   api/           the Hono app + a local dev server
+  web/           authenticated Next.js sales dashboard + public /v1 proxy
   worker/        optional long-lived worker, for non-Vercel hosting
 ```
 
@@ -128,10 +129,46 @@ pnpm dev
 Full deployment walkthrough, including the Vercel cron plan requirement, is in
 [docs/deployment.md](docs/deployment.md).
 
+## Dashboard
+
+The deployed dashboard is a responsive sales operating system, not a read-only
+report. Role-gated workflows are available for:
+
+- overview trends, funnel, attribution health and team performance;
+- direct lead capture, deduplicated customer records, pipeline and complete
+  lead timelines;
+- today queues, follow-up tasks, office walk-ins and scheduled/completed site
+  visits;
+- unit inventory and holds, lead shortlists, negotiations, bookings, token and
+  subsequent payments, refunds and cancellation;
+- campaign/creative outcomes, commercial reports and the Meta/Google delivery
+  log;
+- users, projects, sources, API keys, encrypted integration credentials and
+  conversion-event mappings.
+
+The fastest operational entry points are:
+
+```text
+/leads/new       direct customer / opportunity capture
+/walk-ins/new    offline-capable fresh walk-in capture
+/site-visits     schedule, confirm, arrive, complete, no-show or cancel
+/settings/sources website endpoint, hosted snippet and source health
+```
+
+The walk-in form uses a service worker plus a small, bounded local queue. If a
+salesperson loses connectivity at the site, the same idempotent submission is
+retried when the device reconnects instead of creating another lead.
+
 ## Sending a lead
 
+Production endpoint:
+
+```text
+POST https://monark-sales-dashboard-api.vercel.app/v1/leads
+```
+
 ```bash
-curl -X POST http://localhost:3001/v1/leads \
+curl -X POST https://monark-sales-dashboard-api.vercel.app/v1/leads \
   -H "Authorization: Bearer mk_live_xxxx_yyyy" \
   -H "Content-Type: application/json" \
   -H "Idempotency-Key: form-873278" \
@@ -152,11 +189,17 @@ curl -X POST http://localhost:3001/v1/leads \
 `attribution_expires_at` is the 90-day clock. It is returned deliberately: it is
 the deadline the entire feedback loop runs on.
 
-For websites, use the snippet instead of hand-rolling the call — it handles the
-first-touch capture that a form-time URL read misses:
+For websites, use the hosted snippet instead of hand-rolling the call — it
+handles first/last-touch capture, explicit consent and idempotent retry behavior
+that a form-time URL read misses:
 
 ```html
-<script src="/monark.js" data-endpoint="https://api.monark.in/v1/leads" data-key="mk_live_xxxx_yyyy"></script>
+<script
+  src="https://monark-sales-dashboard-api.vercel.app/monark.js"
+  data-endpoint="https://monark-sales-dashboard-api.vercel.app/v1/leads"
+  data-key="mk_live_xxxx_yyyy"
+  defer
+></script>
 ```
 
 ## Going live with conversions
@@ -203,21 +246,37 @@ RLS. Add org-scoped policies when the dashboard needs client-side reads.
 pnpm test
 ```
 
-62 tests, concentrated on the places where a bug is **silent**: phone/email
+96 workspace tests, concentrated on the places where a bug is **silent**: phone/email
 normalisation and PII hashing (wrong format = 0% match rate, no error anywhere),
 identity resolution (over-merging combines two real buyers), attribution window
-arithmetic, and the eligibility gate.
+arithmetic, the eligibility gate, authorization/validation, integration
+configuration and browser-form retry/consent behavior. The standalone snippet
+suite runs with:
+
+```bash
+node --test packages/web-snippet/monark.test.cjs
+```
+
+That adds 8 browser-snippet tests, for 104 automated checks in the release
+gate. Browser API keys are bearer-only by design; server API keys require the
+timestamped `X-Monark-Signature` HMAC shown when the key is created.
 
 Note that Meta and Google normalise phone numbers **differently** — Meta wants
 digits only, Google wants E.164 with the leading `+`. There is a test pinning
 that divergence, and it is the first thing to check if match rates look wrong.
 
-## Not built yet
+## External rollout dependencies
 
-- Dashboard UI (pipeline board, lead timeline, walk-in check-in, campaign
-  intelligence, delivery log)
-- Meta Lead Ads + WhatsApp webhook receivers
-- Ad spend sync (Meta Insights, Google Ads reporting) — needed for
-  cost-per-site-visit, which is the number that actually changes decisions
-- Nightly value-model recomputation job
-- Assignment engine + speed-to-lead SLA escalation
+The dashboard and universal lead contract are live. These provider-bound jobs
+remain deliberate rollout items because they require account-specific access,
+reviewed field mappings and production credentials rather than UI code alone:
+
+- direct Meta Lead Ads and WhatsApp webhook receivers (both can already post
+  their normalized payloads through `/v1/leads`);
+- scheduled Meta Insights / Google Ads spend imports (the reporting tables and
+  campaign/creative outcome views are ready for the feed);
+- nightly value-model recomputation and automated speed-to-lead escalation.
+
+Until each provider is configured, keep conversion destinations disabled and
+in dry-run. Do not treat a successful local credential validation as a live API
+round trip.

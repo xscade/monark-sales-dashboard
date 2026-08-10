@@ -10,7 +10,10 @@ async function signIn(formData: FormData) {
 
   const email = String(formData.get("email") ?? "").trim().toLowerCase();
   const password = String(formData.get("password") ?? "");
-  const next = String(formData.get("next") ?? "/");
+  const requestedNext = String(formData.get("next") ?? "/");
+  const next = requestedNext.startsWith("/") && !requestedNext.startsWith("//")
+    ? requestedNext
+    : "/";
 
   if (!email || !password) {
     redirect(`/login?error=${encodeURIComponent("Email and password are required")}`);
@@ -116,7 +119,7 @@ export default async function LoginPage({
         </form>
 
         <p className="mt-6 text-center text-xs text-zinc-400">
-          Accounts are created by an administrator in Supabase Auth.
+          Access and invitations are managed by a Monark administrator.
         </p>
       </div>
     </div>

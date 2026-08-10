@@ -72,7 +72,17 @@ export default async function ConversionsPage() {
 
       <Card title="Destinations">
         {destinations.length === 0 ? (
-          <EmptyState title="No destinations configured" hint="Run pnpm db:seed to create them." />
+          <div className="space-y-3 p-5">
+            <EmptyState
+              title="No destinations configured"
+              hint="Create a disabled, dry-run destination in Settings, then add credentials and event mappings."
+            />
+            <div className="text-center">
+              <Link href="/settings/integrations" className="text-sm font-medium text-brand-600 hover:underline dark:text-brand-400">
+                Configure Meta or Google →
+              </Link>
+            </div>
+          </div>
         ) : (
           <DataTable>
             <thead className="border-b border-zinc-100 dark:border-zinc-800">

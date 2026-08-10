@@ -1,9 +1,12 @@
 import Link from "next/link";
-import { requireUser } from "@/lib/auth";
+import { randomUUID } from "node:crypto";
+import { can, requirePermission } from "@/lib/auth";
 import { searchForCheckIn } from "@/lib/queries";
 import { checkInVisit } from "@/lib/actions";
 import { Card, EmptyState, SourceBadge, StageBadge, SubmitButton } from "@/components/ui";
 import { formatRelative } from "@/lib/format";
+import { Button } from "@/components/ui/button";
+import { Plus } from "lucide-react";
 
 export const dynamic = "force-dynamic";
 
@@ -24,19 +27,31 @@ export default async function WalkInsPage({
 }: {
   searchParams: Promise<{ q?: string }>;
 }) {
-  const user = await requireUser();
+  const user = await requirePermission("visits:read");
+  const writable = can(user, "visits:write");
   const params = await searchParams;
   const query = params.q?.trim() ?? "";
 
-  const results = query ? await searchForCheckIn(user.orgId, query) : [];
+  // Individual contributors may only check in opportunities they own. Keep
+  // the lookup aligned with the mutation guard so the UI never exposes a
+  // teammate's buyer and then offers an action that must fail.
+  const results = query
+    ? await searchForCheckIn(
+        user.orgId,
+        query,
+        user.role === "sales_agent" ? user.id : undefined,
+      )
+    : [];
 
   return (
     <div className="mx-auto max-w-3xl space-y-5">
-      <div>
-        <h1 className="text-xl font-semibold">Walk-in check-in</h1>
-        <p className="mt-0.5 text-sm text-zinc-500">
-          Search by phone number, then check the visitor in.
-        </p>
+      <div className="flex flex-col justify-between gap-3 sm:flex-row sm:items-end">
+        <div>
+          <p className="text-xs font-semibold uppercase tracking-[0.16em] text-primary">Reception desk</p>
+          <h1 className="mt-1 text-2xl font-bold tracking-tight">Walk-in check-in</h1>
+          <p className="mt-0.5 text-sm text-muted-foreground">Search existing customers or capture a first-time visitor.</p>
+        </div>
+        {writable && <Button asChild><Link href="/walk-ins/new"><Plus />New walk-in</Link></Button>}
       </div>
 
       <form method="get">
@@ -57,8 +72,9 @@ export default async function WalkInsPage({
         <Card>
           <EmptyState
             title="No matching lead"
-            hint="This may be a fresh walk-in with no prior enquiry. Capture their details through the website form or add them manually, then check in."
+            hint="This may be a first-time visitor. Use New walk-in to capture and check them in together."
           />
+          {writable && <div className="flex justify-center pb-6"><Button asChild><Link href="/walk-ins/new"><Plus />Capture visitor</Link></Button></div>}
         </Card>
       )}
 
@@ -88,8 +104,9 @@ export default async function WalkInsPage({
             </div>
           </div>
 
-          <form action={checkInVisit} className="space-y-3 p-5">
+          {writable && lead.projectId && <form action={checkInVisit} className="space-y-3 p-5">
             <input type="hidden" name="leadId" value={lead.id} />
+            <input type="hidden" name="visitId" value={randomUUID()} />
             <input type="hidden" name="checkInMethod" value="manual" />
 
             <div className="grid gap-3 sm:grid-cols-3">
@@ -138,13 +155,30 @@ export default async function WalkInsPage({
               className="w-full rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-950"
             />
 
+            <div className="grid gap-3 sm:grid-cols-2">
+              <label className="block">
+                <span className="mb-1 block text-xs text-zinc-500">Configurations shown</span>
+                <input name="configurationsViewed" placeholder="3 BHK, 4 BHK" className="w-full rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-950" />
+              </label>
+              <label className="block">
+                <span className="mb-1 block text-xs text-zinc-500">Next action</span>
+                <input name="nextAction" placeholder="Site visit, proposal, follow-up" className="w-full rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-950" />
+              </label>
+            </div>
+
             <div className="flex items-center gap-3">
               <SubmitButton className="px-5 py-2.5">Check in now</SubmitButton>
               <p className="text-xs text-zinc-500">
                 Records the arrival and queues a site-visit conversion for Meta and Google.
               </p>
             </div>
-          </form>
+          </form>}
+          {writable && !lead.projectId && (
+            <div className="flex flex-wrap items-center justify-between gap-3 p-5">
+              <p className="text-sm text-muted-foreground">Assign a project before recording the visit so attribution reaches the correct destination.</p>
+              <Button asChild variant="outline"><Link href={`/leads/${lead.id}`}>Assign project</Link></Button>
+            </div>
+          )}
         </Card>
       ))}
 

@@ -1,17 +1,8 @@
-import Link from "next/link";
 import { redirect } from "next/navigation";
+import { AppShell, type ShellNavSection } from "@/components/app-shell";
 import { can, requireUser } from "@/lib/auth";
 import { createClient } from "@/lib/supabase/server";
 
-/**
- * Application shell.
- *
- * Navigation is grouped by who actually uses it, not by data model:
- * salespeople live in Leads / Pipeline / Walk-ins, marketing in Campaigns /
- * Conversions, management in Overview. Items a role cannot use are hidden
- * rather than shown-and-denied — an agent has no reason to see a Campaign Spend
- * link they will only bounce off.
- */
 export default async function AppLayout({ children }: { children: React.ReactNode }) {
   const user = await requireUser();
 
@@ -22,59 +13,74 @@ export default async function AppLayout({ children }: { children: React.ReactNod
     redirect("/login");
   }
 
-  const nav = [
-    { href: "/", label: "Overview", show: true },
-    { href: "/leads", label: "Leads", show: can(user, "leads:read") },
-    { href: "/pipeline", label: "Pipeline", show: can(user, "leads:read") },
-    { href: "/walk-ins", label: "Walk-ins", show: can(user, "visits:write") },
-    { href: "/campaigns", label: "Campaigns", show: can(user, "campaigns:read") },
-    { href: "/conversions", label: "Conversion Sync", show: can(user, "conversions:read") },
-    { href: "/settings", label: "Settings", show: can(user, "settings:write") },
-  ].filter((i) => i.show);
+  const sections = [
+    {
+      label: "Command centre",
+      items: [
+        { href: "/", label: "Overview", show: true },
+        { href: "/today", label: "Today", show: can(user, "tasks:read") },
+      ],
+    },
+    {
+      label: "Sales",
+      items: [
+        { href: "/leads", label: "Leads", show: can(user, "leads:read") },
+        { href: "/pipeline", label: "Pipeline", show: can(user, "leads:read") },
+        { href: "/customers", label: "Customers", show: can(user, "customers:read") },
+        { href: "/tasks", label: "Tasks", show: can(user, "tasks:read") },
+      ],
+    },
+    {
+      label: "Field operations",
+      items: [
+        { href: "/walk-ins", label: "Walk-ins", show: can(user, "visits:read") },
+        { href: "/site-visits", label: "Site visits", show: can(user, "visits:read") },
+      ],
+    },
+    {
+      label: "Commercial",
+      items: [
+        { href: "/inventory", label: "Inventory", show: can(user, "inventory:read") },
+        { href: "/bookings", label: "Bookings & payments", show: can(user, "bookings:read") },
+      ],
+    },
+    {
+      label: "Intelligence",
+      items: [
+        { href: "/campaigns", label: "Campaign intelligence", show: can(user, "campaigns:read") },
+        { href: "/conversions", label: "Conversion sync", show: can(user, "conversions:read") },
+        { href: "/reports", label: "Reports", show: can(user, "reports:read") },
+      ],
+    },
+    {
+      label: "Workspace",
+      items: [{ href: "/settings", label: "Settings", show: can(user, "settings:write") }],
+    },
+  ]
+    .map((section) => ({
+      label: section.label,
+      items: section.items.filter((item) => item.show).map(({ href, label }) => ({ href, label })),
+    }))
+    .filter((section) => section.items.length > 0) satisfies ShellNavSection[];
+
+  const quickActions = [
+    ...(can(user, "leads:write") ? [{ href: "/leads/new", label: "Add lead" }] : []),
+    ...(can(user, "visits:write") ? [{ href: "/walk-ins/new", label: "Check in" }] : []),
+  ];
 
   return (
-    <div className="min-h-screen">
-      <header className="sticky top-0 z-20 border-b border-zinc-200 bg-white/90 backdrop-blur dark:border-zinc-800 dark:bg-zinc-900/90">
-        <div className="mx-auto flex max-w-[1400px] items-center gap-4 px-4 py-2.5">
-          <Link href="/" className="flex shrink-0 items-center gap-2">
-            <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-brand-600 text-sm font-semibold text-white">
-              M
-            </span>
-            <span className="hidden text-sm font-semibold sm:block">{user.orgName}</span>
-          </Link>
-
-          <nav className="flex flex-1 items-center gap-0.5 overflow-x-auto">
-            {nav.map((item) => (
-              <Link
-                key={item.href}
-                href={item.href}
-                className="whitespace-nowrap rounded-lg px-3 py-1.5 text-sm text-zinc-600 transition hover:bg-zinc-100 hover:text-zinc-900 dark:text-zinc-400 dark:hover:bg-zinc-800 dark:hover:text-zinc-100"
-              >
-                {item.label}
-              </Link>
-            ))}
-          </nav>
-
-          <div className="flex shrink-0 items-center gap-3">
-            <div className="hidden text-right sm:block">
-              <p className="text-xs font-medium leading-tight">{user.name}</p>
-              <p className="text-[11px] capitalize leading-tight text-zinc-500">
-                {user.role.replace(/_/g, " ")}
-              </p>
-            </div>
-            <form action={signOut}>
-              <button
-                type="submit"
-                className="rounded-lg border border-zinc-300 px-2.5 py-1.5 text-xs text-zinc-600 transition hover:bg-zinc-50 dark:border-zinc-700 dark:text-zinc-400 dark:hover:bg-zinc-800"
-              >
-                Sign out
-              </button>
-            </form>
-          </div>
-        </div>
-      </header>
-
-      <main className="mx-auto max-w-[1400px] px-4 py-6">{children}</main>
-    </div>
+    <AppShell
+      user={{
+        name: user.name,
+        email: user.email,
+        role: user.role,
+        orgName: user.orgName,
+      }}
+      sections={sections}
+      quickActions={quickActions}
+      signOutAction={signOut}
+    >
+      {children}
+    </AppShell>
   );
 }

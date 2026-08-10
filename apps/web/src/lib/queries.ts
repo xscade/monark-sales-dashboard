@@ -14,34 +14,53 @@ const db = () => getDb();
  *
  * Terminal stages are excluded from the ladder and reported separately.
  */
-export async function getFunnel(orgId: string, sinceDays = 90) {
+export async function getFunnel(orgId: string, sinceDays = 90, ownerId?: string) {
   const result = await db().execute(sql`
     WITH scoped AS (
-      SELECT l.id
+      SELECT l.id, CASE l.stage::text
+        WHEN 'new' THEN 1
+        WHEN 'contacted' THEN 2
+        WHEN 'qualified' THEN 3
+        WHEN 'visit_scheduled' THEN 4
+        WHEN 'visited' THEN 5
+        WHEN 'negotiating' THEN 6
+        WHEN 'token_paid' THEN 7
+        WHEN 'booked' THEN 8
+        ELSE 1
+      END AS current_rank
       FROM leads l
       WHERE l.org_id = ${orgId}
+        ${ownerId ? sql`AND l.owner_user_id = ${ownerId}` : sql``}
         AND l.is_test = false
         AND l.created_at >= now() - (${sinceDays} || ' days')::interval
     ),
-    reached AS (
-      SELECT DISTINCT h.lead_id, h.to_stage::text AS stage
-      FROM lead_stage_history h
-      JOIN scoped s ON s.id = h.lead_id
-      WHERE h.to_stage NOT IN ('lost', 'disqualified')
-    ),
-    ranked AS (
-      SELECT stage, COUNT(DISTINCT lead_id)::int AS leads
-      FROM reached GROUP BY stage
+    progress AS (
+      SELECT s.id,
+             GREATEST(s.current_rank, COALESCE(MAX(CASE h.to_stage::text
+               WHEN 'new' THEN 1
+               WHEN 'contacted' THEN 2
+               WHEN 'qualified' THEN 3
+               WHEN 'visit_scheduled' THEN 4
+               WHEN 'visited' THEN 5
+               WHEN 'negotiating' THEN 6
+               WHEN 'token_paid' THEN 7
+               WHEN 'booked' THEN 8
+               ELSE NULL
+             END), 1))::int AS max_rank
+      FROM scoped s
+      LEFT JOIN lead_stage_history h ON h.lead_id = s.id
+      GROUP BY s.id, s.current_rank
     )
     SELECT
       st.stage,
-      COALESCE(r.leads, 0) AS leads,
+      COUNT(p.id) FILTER (WHERE p.max_rank >= st.ord)::int AS leads,
       (SELECT COUNT(*)::int FROM scoped) AS total
     FROM (VALUES
       ('new',1),('contacted',2),('qualified',3),('visit_scheduled',4),
       ('visited',5),('negotiating',6),('token_paid',7),('booked',8)
     ) AS st(stage, ord)
-    LEFT JOIN ranked r ON r.stage = st.stage
+    LEFT JOIN progress p ON true
+    GROUP BY st.stage, st.ord
     ORDER BY st.ord
   `);
 
@@ -49,38 +68,96 @@ export async function getFunnel(orgId: string, sinceDays = 90) {
 }
 
 /** Headline numbers for the overview. */
-export async function getOverviewStats(orgId: string) {
+export async function getOverviewStats(orgId: string, timezone = "Asia/Kolkata", ownerId?: string) {
   const result = await db().execute(sql`
     SELECT
       (SELECT COUNT(*)::int FROM leads
         WHERE org_id = ${orgId} AND is_test = false
-          AND created_at >= date_trunc('day', now() AT TIME ZONE 'Asia/Kolkata')) AS "leadsToday",
+          ${ownerId ? sql`AND owner_user_id = ${ownerId}` : sql``}
+          AND created_at >= (date_trunc('day', now() AT TIME ZONE ${timezone}) AT TIME ZONE ${timezone})
+          AND created_at < ((date_trunc('day', now() AT TIME ZONE ${timezone}) + interval '1 day') AT TIME ZONE ${timezone})) AS "leadsToday",
       (SELECT COUNT(*)::int FROM leads
-        WHERE org_id = ${orgId} AND is_test = false AND stage = 'new') AS "unworked",
+        WHERE org_id = ${orgId} AND is_test = false AND stage = 'new'
+          ${ownerId ? sql`AND owner_user_id = ${ownerId}` : sql``}) AS "unworked",
       (SELECT COUNT(*)::int FROM leads
         WHERE org_id = ${orgId} AND is_test = false
+          ${ownerId ? sql`AND owner_user_id = ${ownerId}` : sql``}
           AND stage NOT IN ('booked','lost','disqualified')
           AND next_follow_up_at < now()) AS "overdue",
       (SELECT COUNT(*)::int FROM leads
         WHERE org_id = ${orgId} AND is_test = false
+          ${ownerId ? sql`AND owner_user_id = ${ownerId}` : sql``}
           AND stage = 'new' AND created_at < now() - interval '24 hours') AS "untouched24h",
-      (SELECT COUNT(*)::int FROM visits
-        WHERE org_id = ${orgId}
-          AND scheduled_at >= date_trunc('day', now() AT TIME ZONE 'Asia/Kolkata')
-          AND scheduled_at <  date_trunc('day', now() AT TIME ZONE 'Asia/Kolkata') + interval '1 day'
+      (SELECT COUNT(*)::int FROM visits v
+        JOIN leads l ON l.id = v.lead_id AND l.org_id = v.org_id
+        WHERE v.org_id = ${orgId}
+          ${ownerId ? sql`AND (l.owner_user_id = ${ownerId} OR v.host_user_id = ${ownerId})` : sql``}
+          AND v.scheduled_at >= (date_trunc('day', now() AT TIME ZONE ${timezone}) AT TIME ZONE ${timezone})
+          AND v.scheduled_at < ((date_trunc('day', now() AT TIME ZONE ${timezone}) + interval '1 day') AT TIME ZONE ${timezone})
       ) AS "visitsToday",
-      (SELECT COUNT(*)::int FROM visits
-        WHERE org_id = ${orgId} AND arrived_at >= now() - interval '30 days') AS "visits30d",
-      (SELECT COUNT(*)::int FROM bookings
-        WHERE org_id = ${orgId} AND booked_at >= now() - interval '30 days'
-          AND status <> 'cancelled') AS "bookings30d",
-      (SELECT COALESCE(ROUND(AVG(first_response_seconds)), 0)::int FROM leads
+      (SELECT COUNT(*)::int FROM visits v
+        JOIN leads l ON l.id = v.lead_id AND l.org_id = v.org_id
+        WHERE v.org_id = ${orgId}
+          ${ownerId ? sql`AND (l.owner_user_id = ${ownerId} OR v.host_user_id = ${ownerId})` : sql``}
+          AND v.arrived_at >= now() - interval '30 days') AS "visits30d",
+      (SELECT COUNT(*)::int FROM bookings b
+        JOIN leads l ON l.id = b.lead_id AND l.org_id = b.org_id
+        WHERE b.org_id = ${orgId}
+          ${ownerId ? sql`AND l.owner_user_id = ${ownerId}` : sql``}
+          AND b.booked_at >= now() - interval '30 days'
+          AND b.status <> 'cancelled') AS "bookings30d",
+      (SELECT COALESCE(
+          ROUND(PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY first_response_seconds)::numeric),
+          0
+        )::int FROM leads
         WHERE org_id = ${orgId} AND is_test = false
+          ${ownerId ? sql`AND owner_user_id = ${ownerId}` : sql``}
           AND first_response_seconds IS NOT NULL
           AND created_at >= now() - interval '30 days') AS "medianResponseSeconds"
   `);
 
   return (result.rows as unknown as Record<string, number>[])[0] ?? {};
+}
+
+/** Daily operating pulse used by the overview chart. */
+export async function getOverviewTrend(orgId: string, timezone = "Asia/Kolkata", days = 30, ownerId?: string) {
+  const safeDays = Math.max(7, Math.min(days, 90));
+  const result = await db().execute(sql`
+    WITH calendar AS (
+      SELECT generate_series(
+        (now() AT TIME ZONE ${timezone})::date - (${safeDays} - 1),
+        (now() AT TIME ZONE ${timezone})::date,
+        interval '1 day'
+      )::date AS day
+    )
+    SELECT
+      c.day::text AS date,
+      to_char(c.day, 'DD Mon') AS label,
+      (SELECT COUNT(*)::int FROM leads l
+        WHERE l.org_id = ${orgId} AND l.is_test = false
+          ${ownerId ? sql`AND l.owner_user_id = ${ownerId}` : sql``}
+          AND (l.created_at AT TIME ZONE ${timezone})::date = c.day) AS leads,
+      (SELECT COUNT(*)::int FROM visits v
+        JOIN leads l ON l.id = v.lead_id AND l.org_id = v.org_id
+        WHERE v.org_id = ${orgId} AND v.arrived_at IS NOT NULL
+          ${ownerId ? sql`AND (l.owner_user_id = ${ownerId} OR v.host_user_id = ${ownerId})` : sql``}
+          AND (v.arrived_at AT TIME ZONE ${timezone})::date = c.day) AS visits,
+      (SELECT COUNT(*)::int FROM bookings b
+        JOIN leads l ON l.id = b.lead_id AND l.org_id = b.org_id
+        WHERE b.org_id = ${orgId} AND b.status <> 'cancelled'
+          ${ownerId ? sql`AND l.owner_user_id = ${ownerId}` : sql``}
+          AND (b.booked_at AT TIME ZONE ${timezone})::date = c.day) AS bookings
+    FROM calendar c
+    ORDER BY c.day
+  `);
+
+  return result.rows as unknown as {
+    date: string;
+    label: string;
+    leads: number;
+    visits: number;
+    bookings: number;
+  }[];
 }
 
 /**
@@ -90,7 +167,7 @@ export async function getOverviewStats(orgId: string) {
  * any conversion logged after the deadline can never be credited to the click
  * that produced them. Worth chasing before the clock runs out.
  */
-export async function getExpiringAttribution(orgId: string, limit = 8) {
+export async function getExpiringAttribution(orgId: string, limit = 8, ownerId?: string) {
   const result = await db().execute(sql`
     SELECT
       l.id, l.reference, p.full_name AS "fullName",
@@ -101,6 +178,7 @@ export async function getExpiringAttribution(orgId: string, limit = 8) {
     JOIN persons p ON p.id = l.person_id
     JOIN lead_touchpoints t ON t.id = l.first_touchpoint_id
     WHERE l.org_id = ${orgId}
+      ${ownerId ? sql`AND l.owner_user_id = ${ownerId}` : sql``}
       AND l.is_test = false
       AND l.stage NOT IN ('booked','lost','disqualified')
       AND t.attribution_expires_at IS NOT NULL
@@ -183,14 +261,19 @@ export interface LeadRow {
 
 /** Everything the lead detail page needs, in one round trip per section. */
 export async function getLeadDetail(orgId: string, leadId: string) {
-  const [leadRes, touchpointsRes, historyRes, activitiesRes, visitsRes, qualRes] =
+  const [leadRes, touchpointsRes, historyRes, activitiesRes, visitsRes, qualRes, assignmentsRes] =
     await Promise.all([
       db().execute(sql`
         SELECT l.*, l.stage::text AS stage_text, l.sub_status::text AS sub_status_text,
                l.lost_reason::text AS lost_reason_text,
                p.full_name, p.primary_phone, p.primary_email, p.city, p.state,
                p.is_nri, p.is_suppressed, p.id AS person_id,
-               u.name AS owner_name, pr.name AS project_name
+               u.name AS owner_name, pr.name AS project_name,
+               (EXISTS (SELECT 1 FROM visits pv WHERE pv.org_id = l.org_id AND pv.lead_id = l.id) OR
+                EXISTS (SELECT 1 FROM unit_interests pui WHERE pui.org_id = l.org_id AND pui.lead_id = l.id) OR
+                EXISTS (SELECT 1 FROM bookings pb WHERE pb.org_id = l.org_id AND pb.lead_id = l.id) OR
+                EXISTS (SELECT 1 FROM activities pa WHERE pa.org_id = l.org_id AND pa.lead_id = l.id
+                  AND pa.metadata->>'kind' = 'negotiation_offer')) AS has_project_locked_facts
         FROM leads l
         JOIN persons p ON p.id = l.person_id
         LEFT JOIN users u ON u.id = l.owner_user_id
@@ -222,16 +305,29 @@ export async function getLeadDetail(orgId: string, leadId: string) {
       `),
       db().execute(sql`
         SELECT v.id, v.type::text AS type, v.status::text AS status, v.scheduled_at,
-               v.arrived_at, v.duration_minutes, v.accompanying_count, v.intent_rating,
-               v.notes, v.check_in_method, u.name AS host_name
+               v.arrived_at, v.duration_minutes, v.accompanying_count,
+               v.accompanying_relations, v.intent_rating, v.configurations_viewed,
+               v.units_viewed, v.objections, v.next_action,
+               v.notes, v.check_in_method, v.host_user_id, u.name AS host_name
         FROM visits v LEFT JOIN users u ON u.id = v.host_user_id
         WHERE v.lead_id = ${leadId} ORDER BY COALESCE(v.arrived_at, v.scheduled_at) DESC
       `),
       db().execute(sql`
-        SELECT quality::text AS quality, budget_min, budget_max, desired_configuration,
-               purchase_timeline, funding_mode, is_decision_maker, notes, created_at
+        SELECT quality::text AS quality, budget_fit, location_fit, timeline_fit,
+               configuration_fit, budget_min, budget_max, desired_configuration,
+               purchase_intent, purchase_timeline, funding_mode, is_decision_maker,
+               notes, created_at
         FROM lead_qualifications WHERE lead_id = ${leadId}
         ORDER BY created_at DESC LIMIT 1
+      `),
+      db().execute(sql`
+        SELECT a.id, a.rule, a.reason, a.created_at,
+               previous.name AS from_user_name, next.name AS to_user_name
+        FROM lead_assignments a
+        LEFT JOIN users previous ON previous.id = a.from_user_id
+        LEFT JOIN users next ON next.id = a.to_user_id
+        WHERE a.org_id = ${orgId} AND a.lead_id = ${leadId}
+        ORDER BY a.created_at ASC
       `),
     ]);
 
@@ -245,6 +341,7 @@ export async function getLeadDetail(orgId: string, leadId: string) {
     activities: activitiesRes.rows as any[],
     visits: visitsRes.rows as any[],
     qualification: (qualRes.rows as any[])[0] ?? null,
+    assignments: assignmentsRes.rows as any[],
   };
 }
 
@@ -275,14 +372,14 @@ export async function getPipeline(orgId: string, ownerId?: string) {
 }
 
 /** Walk-in lookup. Phone is the only identifier a receptionist reliably has. */
-export async function searchForCheckIn(orgId: string, query: string) {
+export async function searchForCheckIn(orgId: string, query: string, ownerId?: string) {
   const digits = query.replace(/\D/g, "");
   if (digits.length < 4 && query.trim().length < 3) return [];
 
   const term = `%${digits.length >= 4 ? digits.slice(-10) : query.trim()}%`;
 
   const result = await db().execute(sql`
-    SELECT l.id, l.reference, l.stage::text AS stage,
+    SELECT l.id, l.reference, l.stage::text AS stage, l.project_id AS "projectId",
            p.full_name AS "fullName", p.primary_phone AS "primaryPhone", p.city,
            pr.name AS "projectName", u.name AS "ownerName",
            t.ad_platform AS "adPlatform", t.campaign_name AS "campaignName",
@@ -293,13 +390,14 @@ export async function searchForCheckIn(orgId: string, query: string) {
     LEFT JOIN users u ON u.id = l.owner_user_id
     LEFT JOIN lead_touchpoints t ON t.id = l.first_touchpoint_id
     WHERE l.org_id = ${orgId}
+      ${ownerId ? sql`AND l.owner_user_id = ${ownerId}` : sql``}
       AND (p.primary_phone ILIKE ${term} OR p.full_name ILIKE ${term} OR l.reference ILIKE ${term})
       AND l.stage NOT IN ('lost','disqualified')
     ORDER BY l.created_at DESC
     LIMIT 10
   `);
   return result.rows as unknown as {
-    id: string; reference: string; stage: string; fullName: string | null;
+    id: string; reference: string; stage: string; projectId: string | null; fullName: string | null;
     primaryPhone: string | null; city: string | null; projectName: string | null;
     ownerName: string | null; adPlatform: string | null; campaignName: string | null;
     creativeName: string | null; createdAt: string;
@@ -324,15 +422,24 @@ export async function getCampaignPerformance(orgId: string, days = 90) {
         AND date >= to_char(now() - (${days} || ' days')::interval, 'YYYY-MM-DD')
       GROUP BY platform, campaign_id
     ),
-    lead_stages AS (
+    lead_facts AS (
       SELECT t.ad_platform AS platform, t.campaign_id, MAX(t.campaign_name) AS campaign_name,
              l.id AS lead_id,
-             BOOL_OR(h.to_stage = 'qualified')  AS reached_qualified,
-             BOOL_OR(h.to_stage = 'visited')    AS reached_visited,
-             BOOL_OR(h.to_stage = 'booked')     AS reached_booked
+             EXISTS (
+               SELECT 1 FROM lead_stage_history h
+               WHERE h.org_id = l.org_id AND h.lead_id = l.id AND h.to_stage = 'qualified'
+             ) AS reached_qualified,
+             EXISTS (
+               SELECT 1 FROM visits v
+               WHERE v.org_id = l.org_id AND v.lead_id = l.id
+                 AND v.type = 'project_site' AND v.arrived_at IS NOT NULL
+             ) AS reached_visited,
+             EXISTS (
+               SELECT 1 FROM bookings b
+               WHERE b.org_id = l.org_id AND b.lead_id = l.id AND b.status <> 'cancelled'
+             ) AS reached_booked
       FROM leads l
       JOIN lead_touchpoints t ON t.id = l.first_touchpoint_id
-      LEFT JOIN lead_stage_history h ON h.lead_id = l.id
       WHERE l.org_id = ${orgId} AND l.is_test = false
         AND l.created_at >= now() - (${days} || ' days')::interval
         AND t.campaign_id IS NOT NULL
@@ -344,7 +451,7 @@ export async function getCampaignPerformance(orgId: string, days = 90) {
              COUNT(*) FILTER (WHERE reached_qualified)::int AS qualified,
              COUNT(*) FILTER (WHERE reached_visited)::int  AS visits,
              COUNT(*) FILTER (WHERE reached_booked)::int   AS bookings
-      FROM lead_stages GROUP BY platform, campaign_id
+      FROM lead_facts GROUP BY platform, campaign_id
     )
     SELECT
       COALESCE(o.platform, s.platform) AS platform,
@@ -414,9 +521,20 @@ export async function getConversionHealth(orgId: string) {
 export async function listAgents(orgId: string) {
   const result = await db().execute(sql`
     SELECT id, name, role::text AS role FROM users
-    WHERE org_id = ${orgId} AND is_active = true ORDER BY name
+    WHERE org_id = ${orgId} AND is_active = true
+      AND role IN ('owner', 'admin', 'sales_manager', 'sales_agent', 'receptionist')
+    ORDER BY name
   `);
   return result.rows as unknown as { id: string; name: string; role: string }[];
+}
+
+export async function listActiveProjects(orgId: string) {
+  const result = await db().execute(sql`
+    SELECT id, name FROM projects
+    WHERE org_id = ${orgId} AND is_active = true
+    ORDER BY name
+  `);
+  return result.rows as unknown as { id: string; name: string }[];
 }
 
 /** Per-agent performance. Stops marketing being blamed for a lead nobody rang. */
@@ -426,9 +544,13 @@ export async function getAgentPerformance(orgId: string, days = 30) {
       COUNT(l.id)::int AS leads,
       COUNT(l.id) FILTER (WHERE l.first_contacted_at IS NOT NULL)::int AS contacted,
       COUNT(l.id) FILTER (WHERE EXISTS (
-        SELECT 1 FROM lead_stage_history h WHERE h.lead_id = l.id AND h.to_stage = 'visited'
+        SELECT 1 FROM visits v
+        WHERE v.org_id = l.org_id AND v.lead_id = l.id AND v.arrived_at IS NOT NULL
       ))::int AS visits,
-      COUNT(l.id) FILTER (WHERE l.stage = 'booked')::int AS bookings,
+      COUNT(l.id) FILTER (WHERE EXISTS (
+        SELECT 1 FROM bookings b
+        WHERE b.org_id = l.org_id AND b.lead_id = l.id AND b.status <> 'cancelled'
+      ))::int AS bookings,
       COALESCE(ROUND(AVG(l.first_response_seconds)), 0)::int AS "avgResponseSeconds"
     FROM users u
     LEFT JOIN leads l ON l.owner_user_id = u.id

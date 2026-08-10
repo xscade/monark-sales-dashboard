@@ -1,6 +1,6 @@
 import { createHash, timingSafeEqual, createHmac } from "node:crypto";
 import { apiKeys, type Database } from "@monark/db";
-import { and, eq, isNull } from "drizzle-orm";
+import { and, eq, isNull, sql } from "drizzle-orm";
 
 /**
  * API key + optional HMAC request signing.
@@ -12,8 +12,8 @@ import { and, eq, isNull } from "drizzle-orm";
  *   Bearer key  — identifies the caller and its org/project scope.
  *   HMAC        — proves the body was not tampered with and is not a replay.
  *
- * HMAC is optional per key because a browser-side form cannot hold a signing
- * secret. Server-to-server integrations should always sign.
+ * Browser-policy keys permit bearer-only calls because client code cannot hold
+ * a secret. Server-policy keys require HMAC on every request.
  */
 
 export interface AuthenticatedKey {
@@ -22,6 +22,8 @@ export interface AuthenticatedKey {
   projectId: string | null;
   scopes: string[];
   signingSecretEncrypted: string;
+  keyPolicy: "browser" | "server";
+  signatureRequired: boolean;
   rateLimitPerMinute: number;
 }
 
@@ -71,6 +73,9 @@ export async function authenticate(
     return { ok: false, status: 401, error: "Invalid or revoked API key" };
   }
 
+  const keyPolicy = row.keyPolicy === "server" ? "server" : "browser";
+  const configuredRateLimit = Number(row.rateLimitPerMinute);
+
   return {
     ok: true,
     key: {
@@ -79,12 +84,28 @@ export async function authenticate(
       projectId: row.projectId,
       scopes: row.scopes,
       signingSecretEncrypted: row.signingSecretEncrypted,
-      rateLimitPerMinute: Number(row.rateLimitPerMinute),
+      keyPolicy,
+      // Fail closed if a malformed legacy row says "server" but has not had
+      // its derived boolean repaired yet.
+      signatureRequired: keyPolicy === "server" || row.signatureRequired,
+      rateLimitPerMinute:
+        Number.isInteger(configuredRateLimit) &&
+        configuredRateLimit >= 1 &&
+        configuredRateLimit <= 10_000
+          ? configuredRateLimit
+          : 120,
     },
   };
 }
 
 export const SIGNATURE_TOLERANCE_SECONDS = 300;
+
+export function isRequiredSignatureMissing(
+  key: Pick<AuthenticatedKey, "signatureRequired">,
+  signatureHeader: string | undefined,
+): boolean {
+  return key.signatureRequired && !signatureHeader;
+}
 
 /**
  * Verify `X-Monark-Signature: t=<unix>,v1=<hex>`.
@@ -95,7 +116,7 @@ export const SIGNATURE_TOLERANCE_SECONDS = 300;
  */
 export function verifySignature(params: {
   header: string | undefined;
-  rawBody: string;
+  rawBody: string | Uint8Array;
   secret: string;
   now?: Date;
 }): { ok: true } | { ok: false; error: string } {
@@ -131,23 +152,44 @@ export function verifySignature(params: {
 }
 
 /**
- * In-memory sliding-window rate limiter.
+ * Consume one request from a database-backed fixed-minute bucket.
  *
- * Adequate for a single API instance. Running more than one replica means
- * moving this to Postgres or Redis — noted here rather than discovered under
- * load, because the failure is silent (each replica enforces its own limit, so
- * the effective limit multiplies by replica count).
+ * The UPSERT is one Postgres statement, so every serverless replica contends
+ * on the same row and the `WHERE request_count < limit` check is atomic. Old
+ * rows for this key are pruned in the same statement to keep the table bounded.
  */
-const buckets = new Map<string, number[]>();
+export async function consumeRateLimit(
+  db: Database,
+  keyId: string,
+  orgId: string,
+  limitPerMinute: number,
+): Promise<boolean> {
+  const limit = Math.max(1, Math.min(Math.trunc(limitPerMinute) || 1, 10_000));
+  const result = await db.execute(sql`
+    WITH bucket_clock AS (
+      SELECT date_trunc('minute', now()) AS window_start
+    ), pruned AS (
+      DELETE FROM api_rate_limit_buckets
+      USING bucket_clock
+      WHERE api_rate_limit_buckets.api_key_id = ${keyId}
+        AND api_rate_limit_buckets.window_start < bucket_clock.window_start - interval '2 hours'
+      RETURNING api_rate_limit_buckets.api_key_id
+    ), consumed AS (
+      INSERT INTO api_rate_limit_buckets (
+        org_id, api_key_id, window_start, request_count
+      )
+      SELECT authenticated_key.org_id, authenticated_key.id, bucket_clock.window_start, 1
+      FROM bucket_clock
+      JOIN api_keys authenticated_key
+        ON authenticated_key.id = ${keyId}
+       AND authenticated_key.org_id = ${orgId}
+      ON CONFLICT (api_key_id, window_start) DO UPDATE
+      SET request_count = api_rate_limit_buckets.request_count + 1
+      WHERE api_rate_limit_buckets.request_count < ${limit}
+      RETURNING request_count
+    )
+    SELECT request_count AS "requestCount" FROM consumed
+  `);
 
-export function checkRateLimit(keyId: string, limitPerMinute: number, now = Date.now()): boolean {
-  const windowStart = now - 60_000;
-  const hits = (buckets.get(keyId) ?? []).filter((t) => t > windowStart);
-  if (hits.length >= limitPerMinute) {
-    buckets.set(keyId, hits);
-    return false;
-  }
-  hits.push(now);
-  buckets.set(keyId, hits);
-  return true;
+  return result.rows.length === 1;
 }

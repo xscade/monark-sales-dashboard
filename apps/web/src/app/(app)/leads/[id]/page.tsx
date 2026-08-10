@@ -1,9 +1,12 @@
 import Link from "next/link";
+import { randomUUID } from "node:crypto";
 import { notFound } from "next/navigation";
 import { LEAD_STAGES, TERMINAL_STAGES } from "@monark/core";
-import { requireUser } from "@/lib/auth";
-import { getLeadDetail, listAgents } from "@/lib/queries";
-import { assignLead, changeStage, checkInVisit, logActivity } from "@/lib/actions";
+import { can, requirePermission } from "@/lib/auth";
+import { getLeadDetail, listActiveProjects, listAgents } from "@/lib/queries";
+import { assignLead, changeStage, checkInVisit, logActivity, updateLeadProject } from "@/lib/actions";
+import { saveQualification } from "@/lib/qualification-actions";
+import { LeadCommercialPanel } from "@/components/lead-commercial-panel";
 import { AttributionClock, Card, EmptyState, SourceBadge, StageBadge, SubmitButton } from "@/components/ui";
 import {
   formatDateTime,
@@ -19,23 +22,30 @@ export const dynamic = "force-dynamic";
  *  not in four separate tables. */
 type TimelineItem = {
   at: Date;
-  kind: "touchpoint" | "stage" | "activity" | "visit";
+  kind: "touchpoint" | "stage" | "assignment" | "activity" | "visit";
   title: string;
   detail?: string | null;
   meta?: string | null;
 };
 
 export default async function LeadDetailPage({ params }: { params: Promise<{ id: string }> }) {
-  const user = await requireUser();
+  const user = await requirePermission("leads:read");
+  const hasLeadWritePermission = can(user, "leads:write");
+  const canAssign = can(user, "leads:assign");
   const { id } = await params;
 
-  const [data, agents] = await Promise.all([
+  const [data, agents, activeProjects] = await Promise.all([
     getLeadDetail(user.orgId, id),
-    listAgents(user.orgId),
+    canAssign ? listAgents(user.orgId) : Promise.resolve([]),
+    hasLeadWritePermission ? listActiveProjects(user.orgId) : Promise.resolve([]),
   ]);
   if (!data) notFound();
 
-  const { lead, touchpoints, history, activities, visits, qualification } = data;
+  const { lead, touchpoints, history, assignments, activities, visits, qualification } = data;
+  const isOwner = lead.owner_user_id === user.id;
+  const isVisitHost = visits.some((visit) => visit.host_user_id === user.id);
+  if (user.role === "sales_agent" && !isOwner && !isVisitHost) notFound();
+  const writable = hasLeadWritePermission && (user.role !== "sales_agent" || isOwner);
   const firstTouch = touchpoints[0];
 
   const timeline: TimelineItem[] = [
@@ -57,6 +67,15 @@ export default async function LeadDetailPage({ params }: { params: Promise<{ id:
         .filter(Boolean)
         .join(" · ") || null,
     })),
+    ...assignments.map((assignment) => ({
+      at: new Date(assignment.created_at),
+      kind: "assignment" as const,
+      title: assignment.to_user_name ? `Assigned to ${assignment.to_user_name}` : "Lead unassigned",
+      detail: assignment.reason,
+      meta: [assignment.from_user_name ? `from ${assignment.from_user_name}` : null, assignment.rule]
+        .filter(Boolean)
+        .join(" · ") || null,
+    })),
     ...activities.map((a) => ({
       at: new Date(a.occurred_at),
       kind: "activity" as const,
@@ -70,8 +89,23 @@ export default async function LeadDetailPage({ params }: { params: Promise<{ id:
       title: v.arrived_at
         ? `Visited — ${String(v.type).replace(/_/g, " ")}`
         : `Visit scheduled — ${String(v.type).replace(/_/g, " ")}`,
-      detail: v.notes,
-      meta: [v.host_name, v.accompanying_count ? `${v.accompanying_count} accompanying` : null]
+      detail: [
+        v.notes,
+        Array.isArray(v.configurations_viewed) && v.configurations_viewed.length
+          ? `Configurations: ${v.configurations_viewed.join(", ")}` : null,
+        Array.isArray(v.units_viewed) && v.units_viewed.length
+          ? `Plans / units: ${v.units_viewed.join(", ")}` : null,
+        Array.isArray(v.objections) && v.objections.length
+          ? `Objections: ${v.objections.join(", ")}` : null,
+        v.next_action ? `Next: ${v.next_action}` : null,
+      ].filter(Boolean).join("\n") || null,
+      meta: [
+        v.host_name,
+        v.accompanying_count ? `${v.accompanying_count} accompanying` : null,
+        Array.isArray(v.accompanying_relations) && v.accompanying_relations.length
+          ? v.accompanying_relations.join(", ") : null,
+        v.intent_rating ? `intent ${v.intent_rating}/5` : null,
+      ]
         .filter(Boolean)
         .join(" · ") || null,
     })),
@@ -82,6 +116,7 @@ export default async function LeadDetailPage({ params }: { params: Promise<{ id:
   const dotClass: Record<TimelineItem["kind"], string> = {
     touchpoint: "bg-brand-500",
     stage: "bg-emerald-500",
+    assignment: "bg-violet-500",
     activity: "bg-zinc-400",
     visit: "bg-amber-500",
   };
@@ -149,7 +184,7 @@ export default async function LeadDetailPage({ params }: { params: Promise<{ id:
             )}
           </Card>
 
-          <Card title="Log activity">
+          {writable && <Card title="Log activity">
             <form action={logActivity} className="space-y-3 p-5">
               <input type="hidden" name="leadId" value={lead.id} />
               <div className="flex flex-wrap gap-2">
@@ -189,7 +224,7 @@ export default async function LeadDetailPage({ params }: { params: Promise<{ id:
               />
               <SubmitButton>Save activity</SubmitButton>
             </form>
-          </Card>
+          </Card>}
         </div>
 
         <div className="space-y-5">
@@ -228,7 +263,7 @@ export default async function LeadDetailPage({ params }: { params: Promise<{ id:
             )}
           </Card>
 
-          <Card title="Move stage">
+          {writable && <Card title="Move stage">
             <form action={changeStage} className="space-y-3 p-5">
               <input type="hidden" name="leadId" value={lead.id} />
               <select
@@ -240,13 +275,33 @@ export default async function LeadDetailPage({ params }: { params: Promise<{ id:
                 <option value="" disabled>
                   Select stage…
                 </option>
-                {[...LEAD_STAGES, ...TERMINAL_STAGES]
+                {["new", "contacted", "qualified", "negotiating", ...TERMINAL_STAGES]
                   .filter((s) => s !== lead.stage_text)
                   .map((s) => (
                     <option key={s} value={s}>
                       {stageLabel(s)}
                     </option>
                   ))}
+              </select>
+              <select
+                name="reasonCode"
+                defaultValue=""
+                className="w-full rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-950"
+              >
+                <option value="">Closing reason (required for Lost / Disqualified)…</option>
+                <option value="not_interested">Not interested</option>
+                <option value="budget_mismatch">Budget mismatch</option>
+                <option value="location_mismatch">Location mismatch</option>
+                <option value="configuration_mismatch">Configuration mismatch</option>
+                <option value="possession_timeline_mismatch">Possession timeline mismatch</option>
+                <option value="postponed">Postponed</option>
+                <option value="no_response">No response</option>
+                <option value="bought_competitor">Bought from competitor</option>
+                <option value="invalid_contact">Invalid contact</option>
+                <option value="duplicate">Duplicate</option>
+                <option value="spam_or_bot">Spam or bot</option>
+                <option value="wrong_geography">Wrong geography</option>
+                <option value="agent_or_broker">Agent or broker</option>
               </select>
               <input
                 name="reason"
@@ -255,14 +310,15 @@ export default async function LeadDetailPage({ params }: { params: Promise<{ id:
               />
               <SubmitButton>Update stage</SubmitButton>
               <p className="text-xs text-zinc-500">
-                Moving to a stage that maps to a conversion queues it for Meta and Google.
+                Visits, token payments and bookings are advanced by their dedicated workflows so reporting stays auditable.
               </p>
             </form>
-          </Card>
+          </Card>}
 
-          <Card title="Check in a visit">
+          {writable && lead.project_id && <Card title="Check in a visit">
             <form action={checkInVisit} className="space-y-3 p-5">
               <input type="hidden" name="leadId" value={lead.id} />
+              <input type="hidden" name="visitId" value={randomUUID()} />
               <select
                 name="visitType"
                 className="w-full rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-950"
@@ -301,9 +357,17 @@ export default async function LeadDetailPage({ params }: { params: Promise<{ id:
               />
               <SubmitButton>Check in now</SubmitButton>
             </form>
-          </Card>
+          </Card>}
+          {writable && !lead.project_id && (
+            <Card title="Check in a visit">
+              <div className="space-y-2 p-5 text-sm">
+                <p className="font-medium">Assign a project before check-in</p>
+                <p className="text-muted-foreground">Use the Opportunity project card below so the visit and offline conversion are routed to the correct project.</p>
+              </div>
+            </Card>
+          )}
 
-          <Card title="Ownership">
+          {canAssign && <Card title="Ownership">
             <form action={assignLead} className="space-y-3 p-5">
               <input type="hidden" name="leadId" value={lead.id} />
               <select
@@ -320,27 +384,59 @@ export default async function LeadDetailPage({ params }: { params: Promise<{ id:
               </select>
               <SubmitButton variant="secondary">Reassign</SubmitButton>
             </form>
-          </Card>
+          </Card>}
 
-          {qualification && (
-            <Card title="Qualification">
-              <dl className="space-y-2.5 px-5 py-4 text-sm">
-                <Row label="Quality">
-                  <span className="capitalize">{String(qualification.quality).replace(/_/g, " ")}</span>
-                </Row>
-                <Row label="Budget">
-                  {qualification.budget_min || qualification.budget_max
-                    ? `${formatINR(qualification.budget_min, true)} – ${formatINR(qualification.budget_max, true)}`
-                    : "—"}
-                </Row>
+          {writable && <Card title="Opportunity project" subtitle="Required for unit shortlists and bookings">
+            <form action={updateLeadProject} className="space-y-3 p-5">
+              <input type="hidden" name="leadId" value={lead.id} />
+              <select
+                name="projectId"
+                defaultValue={lead.project_id ?? ""}
+                disabled={Boolean(lead.project_id && lead.has_project_locked_facts)}
+                className="w-full rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm disabled:cursor-not-allowed disabled:opacity-60 dark:border-zinc-700 dark:bg-zinc-950"
+              >
+                <option value="">No project selected</option>
+                {activeProjects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}
+              </select>
+              {lead.project_id && lead.has_project_locked_facts
+                ? <p className="text-xs text-zinc-500">Locked after the first visit or commercial activity to preserve history.</p>
+                : <>
+                    {!lead.project_id && lead.has_project_locked_facts && (
+                      <p className="text-xs text-zinc-500">Choose the project now; unclassified visits and touchpoints will be linked safely.</p>
+                    )}
+                    <SubmitButton variant="secondary" className="w-full">Save project</SubmitButton>
+                  </>}
+            </form>
+          </Card>}
+
+          <Card title="Qualification" subtitle="Structured feedback trains campaign quality reporting">
+            {qualification && (
+              <dl className="space-y-2.5 border-b border-zinc-100 px-5 py-4 text-sm dark:border-zinc-800">
+                <Row label="Quality"><span className="capitalize">{String(qualification.quality).replace(/_/g, " ")}</span></Row>
+                <Row label="Budget">{qualification.budget_min || qualification.budget_max ? `${formatINR(qualification.budget_min, true)} – ${formatINR(qualification.budget_max, true)}` : "—"}</Row>
                 <Row label="Configuration">{qualification.desired_configuration ?? "—"}</Row>
                 <Row label="Timeline">{qualification.purchase_timeline ?? "—"}</Row>
                 <Row label="Funding">{qualification.funding_mode ?? "—"}</Row>
               </dl>
-            </Card>
-          )}
+            )}
+            {writable ? (
+              <form action={saveQualification} className="space-y-3 p-5">
+                <input type="hidden" name="leadId" value={lead.id} />
+                <label className="block"><span className="mb-1 block text-xs text-zinc-500">Lead quality</span><select name="quality" defaultValue={qualification?.quality ?? "unrated"} className="w-full rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-950"><option value="unrated">Unrated</option><option value="invalid">Invalid</option><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option><option value="very_high">Very high</option></select></label>
+                <div className="grid grid-cols-2 gap-2"><label className="block"><span className="mb-1 block text-xs text-zinc-500">Budget min</span><input name="budgetMin" inputMode="numeric" defaultValue={qualification?.budget_min ?? ""} placeholder="15000000" className="w-full rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-950" /></label><label className="block"><span className="mb-1 block text-xs text-zinc-500">Budget max</span><input name="budgetMax" inputMode="numeric" defaultValue={qualification?.budget_max ?? ""} placeholder="25000000" className="w-full rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-950" /></label></div>
+                <label className="block"><span className="mb-1 block text-xs text-zinc-500">Configuration</span><input name="desiredConfiguration" defaultValue={qualification?.desired_configuration ?? ""} placeholder="3 BHK, 4 BHK…" className="w-full rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-950" /></label>
+                <div className="grid grid-cols-2 gap-2"><select name="purchaseIntent" defaultValue={qualification?.purchase_intent ?? ""} className="rounded-lg border border-zinc-300 bg-white px-2 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-950"><option value="">Purchase intent…</option><option value="end_use">End use</option><option value="investment">Investment</option><option value="undecided">Undecided</option></select><select name="purchaseTimeline" defaultValue={qualification?.purchase_timeline ?? ""} className="rounded-lg border border-zinc-300 bg-white px-2 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-950"><option value="">Timeline…</option><option value="immediate">Immediate</option><option value="3_months">Within 3 months</option><option value="6_months">Within 6 months</option><option value="12_months">Within 12 months</option><option value="exploring">Exploring</option></select></div>
+                <select name="fundingMode" defaultValue={qualification?.funding_mode ?? ""} className="w-full rounded-lg border border-zinc-300 bg-white px-2 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-950"><option value="">Funding…</option><option value="self">Self funded</option><option value="home_loan">Home loan</option><option value="mixed">Mixed</option></select>
+                <div className="grid grid-cols-2 gap-2 text-xs"><label className="flex items-center gap-2"><input type="checkbox" name="budgetFit" defaultChecked={Boolean(qualification?.budget_fit)} />Budget fit</label><label className="flex items-center gap-2"><input type="checkbox" name="locationFit" defaultChecked={Boolean(qualification?.location_fit)} />Location fit</label><label className="flex items-center gap-2"><input type="checkbox" name="timelineFit" defaultChecked={Boolean(qualification?.timeline_fit)} />Timeline fit</label><label className="flex items-center gap-2"><input type="checkbox" name="configurationFit" defaultChecked={Boolean(qualification?.configuration_fit)} />Configuration fit</label><label className="col-span-2 flex items-center gap-2"><input type="checkbox" name="isDecisionMaker" defaultChecked={Boolean(qualification?.is_decision_maker)} />Decision maker involved</label></div>
+                <textarea name="notes" rows={2} defaultValue={qualification?.notes ?? ""} placeholder="Qualification notes…" className="w-full rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-950" />
+                <SubmitButton className="w-full">Save qualification</SubmitButton>
+              </form>
+            ) : !qualification ? <EmptyState title="Not qualified yet" /> : null}
+          </Card>
         </div>
       </div>
+
+      <LeadCommercialPanel orgId={user.orgId} leadId={lead.id} writable={writable} />
     </div>
   );
 }

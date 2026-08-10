@@ -113,21 +113,35 @@ export async function requireUser(): Promise<SessionUser> {
  * rather than scattered `role === "admin"` checks, so the permission surface
  * can be read in one place.
  */
-const PERMISSIONS: Record<string, SessionUser["role"][]> = {
+export const PERMISSIONS = {
   "leads:read": ["owner", "admin", "marketing", "sales_manager", "sales_agent", "receptionist", "read_only"],
   "leads:write": ["owner", "admin", "sales_manager", "sales_agent", "receptionist"],
+  "leads:assign": ["owner", "admin", "sales_manager"],
+  "customers:read": ["owner", "admin", "marketing", "sales_manager", "sales_agent", "receptionist", "read_only"],
+  "customers:write": ["owner", "admin", "sales_manager", "sales_agent", "receptionist"],
+  "tasks:read": ["owner", "admin", "marketing", "sales_manager", "sales_agent", "receptionist", "read_only"],
+  "tasks:write": ["owner", "admin", "sales_manager", "sales_agent", "receptionist"],
+  "visits:read": ["owner", "admin", "marketing", "sales_manager", "sales_agent", "receptionist", "read_only"],
   "visits:write": ["owner", "admin", "sales_manager", "sales_agent", "receptionist"],
+  "inventory:read": ["owner", "admin", "marketing", "sales_manager", "sales_agent", "receptionist", "read_only"],
+  "inventory:write": ["owner", "admin", "sales_manager"],
+  "bookings:read": ["owner", "admin", "marketing", "sales_manager", "sales_agent", "receptionist", "read_only"],
   "bookings:write": ["owner", "admin", "sales_manager"],
   "campaigns:read": ["owner", "admin", "marketing", "sales_manager"],
+  "campaigns:write": ["owner", "admin", "marketing"],
   "conversions:read": ["owner", "admin", "marketing"],
+  "conversions:write": ["owner", "admin", "marketing"],
+  "reports:read": ["owner", "admin", "marketing", "sales_manager", "read_only"],
   "settings:write": ["owner", "admin"],
-};
+} satisfies Record<string, SessionUser["role"][]>;
 
-export function can(user: SessionUser, permission: keyof typeof PERMISSIONS): boolean {
-  return PERMISSIONS[permission]?.includes(user.role) ?? false;
+export type Permission = keyof typeof PERMISSIONS;
+
+export function can(user: SessionUser, permission: Permission): boolean {
+  return (PERMISSIONS[permission] as readonly SessionUser["role"][]).includes(user.role);
 }
 
-export async function requirePermission(permission: keyof typeof PERMISSIONS): Promise<SessionUser> {
+export async function requirePermission(permission: Permission): Promise<SessionUser> {
   const user = await requireUser();
   if (!can(user, permission)) redirect("/");
   return user;

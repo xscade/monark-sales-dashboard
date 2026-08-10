@@ -9,11 +9,103 @@ import {
   type ForwardStage,
   type LeadStage,
 } from "@monark/core";
-import { activities, getDb, leadStageHistory, leads, visits } from "@monark/db";
+import { activities, auditLogs, getDb, leadStageHistory, leads, leadTouchpoints, projects, users, visits } from "@monark/db";
 import { emitConversionEvent, eventKeyFor } from "@monark/services";
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, isNull, sql } from "drizzle-orm";
 import { revalidatePath } from "next/cache";
-import { requireUser } from "./auth";
+import { z } from "zod";
+import { requirePermission } from "./auth";
+import { localDateTimeSchema, parseLocalDateTime } from "./datetime";
+import { lockLeadForUpdate } from "./lead-lock";
+
+const editableStages = ["new", "contacted", "qualified", "negotiating", "lost", "disqualified"] as const;
+const lostReasons = [
+  "not_interested", "budget_mismatch", "location_mismatch", "configuration_mismatch",
+  "possession_timeline_mismatch", "postponed", "no_response", "bought_competitor",
+  "invalid_contact", "duplicate", "spam_or_bot", "wrong_geography", "agent_or_broker",
+] as const;
+
+const stageChangeSchema = z.object({
+  leadId: z.string().uuid(),
+  toStage: z.enum(editableStages),
+  reason: z.string().trim().max(500).optional(),
+  reasonCode: z.preprocess((value) => String(value ?? "").trim() || undefined, z.enum(lostReasons).optional()),
+});
+
+const leadProjectSchema = z.object({
+  leadId: z.string().uuid(),
+  projectId: z.preprocess(
+    (value) => String(value ?? "").trim() || null,
+    z.string().uuid().nullable(),
+  ),
+});
+
+export async function updateLeadProject(formData: FormData) {
+  const user = await requirePermission("leads:write");
+  const parsed = leadProjectSchema.safeParse(Object.fromEntries(formData));
+  if (!parsed.success) throw new Error("Invalid project selection");
+
+  await getDb().transaction(async (tx) => {
+    if (!(await lockLeadForUpdate(tx, user.orgId, parsed.data.leadId, user))) {
+      throw new Error("Lead not found");
+    }
+    const [lead] = await tx.select({ id: leads.id, projectId: leads.projectId }).from(leads)
+      .where(and(eq(leads.id, parsed.data.leadId), eq(leads.orgId, user.orgId))).limit(1);
+    if (!lead || lead.projectId === parsed.data.projectId) return;
+
+    if (parsed.data.projectId) {
+      const [project] = await tx.select({ id: projects.id }).from(projects).where(and(
+        eq(projects.id, parsed.data.projectId), eq(projects.orgId, user.orgId), eq(projects.isActive, true),
+      )).limit(1);
+      if (!project) throw new Error("Project is not active in this organisation");
+    }
+
+    const isInitialAssignment = lead.projectId === null && parsed.data.projectId !== null;
+    if (!isInitialAssignment) {
+      const locked = await tx.execute(sql`
+        SELECT (
+          EXISTS (SELECT 1 FROM visits WHERE org_id = ${user.orgId} AND lead_id = ${lead.id}) OR
+          EXISTS (SELECT 1 FROM unit_interests WHERE org_id = ${user.orgId} AND lead_id = ${lead.id}) OR
+          EXISTS (SELECT 1 FROM bookings WHERE org_id = ${user.orgId} AND lead_id = ${lead.id}) OR
+          EXISTS (SELECT 1 FROM activities WHERE org_id = ${user.orgId} AND lead_id = ${lead.id}
+            AND metadata->>'kind' = 'negotiation_offer')
+        ) AS locked
+      `);
+      if (Boolean(locked.rows[0]?.locked)) {
+        throw new Error("Project cannot change after a visit or commercial activity is recorded");
+      }
+    }
+
+    await tx.update(leads).set({ projectId: parsed.data.projectId, updatedAt: new Date() })
+      .where(and(eq(leads.id, lead.id), eq(leads.orgId, user.orgId)));
+    if (isInitialAssignment && parsed.data.projectId) {
+      // Fresh walk-ins may be captured before the visitor chooses a project.
+      // Once staff resolves it, attach only still-unclassified facts; never
+      // rewrite a project already recorded on a visit or touchpoint.
+      await tx.update(visits).set({ projectId: parsed.data.projectId, updatedAt: new Date() })
+        .where(and(
+          eq(visits.orgId, user.orgId),
+          eq(visits.leadId, lead.id),
+          isNull(visits.projectId),
+        ));
+      await tx.update(leadTouchpoints).set({ projectId: parsed.data.projectId })
+        .where(and(
+          eq(leadTouchpoints.orgId, user.orgId),
+          eq(leadTouchpoints.leadId, lead.id),
+          isNull(leadTouchpoints.projectId),
+        ));
+    }
+    await tx.insert(auditLogs).values({
+      id: randomUUID(), orgId: user.orgId, actorUserId: user.id,
+      action: "lead.project_changed", entityType: "lead", entityId: lead.id,
+      before: { projectId: lead.projectId }, after: { projectId: parsed.data.projectId },
+    });
+  });
+
+  revalidatePath(`/leads/${parsed.data.leadId}`);
+  revalidatePath("/leads");
+  revalidatePath("/pipeline");
+}
 
 /**
  * Expected value for a conversion event.
@@ -41,14 +133,25 @@ async function modelledValue(
 }
 
 export async function changeStage(formData: FormData) {
-  const user = await requireUser();
-  const leadId = String(formData.get("leadId"));
-  const toStage = String(formData.get("toStage")) as LeadStage;
-  const reason = String(formData.get("reason") ?? "").trim() || null;
+  const user = await requirePermission("leads:write");
+  const parsed = stageChangeSchema.safeParse({
+    leadId: formData.get("leadId"),
+    toStage: formData.get("toStage"),
+    reason: formData.get("reason"),
+    reasonCode: formData.get("reasonCode"),
+  });
+  if (!parsed.success) throw new Error("Invalid stage change");
+  const { leadId, toStage, reasonCode } = parsed.data;
+  const reason = parsed.data.reason || null;
+  const isTerminalChange = toStage === "lost" || toStage === "disqualified";
+  if (isTerminalChange && !reasonCode) throw new Error("Choose a structured closing reason");
 
   const db = getDb();
 
   await db.transaction(async (tx) => {
+    if (!(await lockLeadForUpdate(tx, user.orgId, leadId, user))) {
+      throw new Error("Lead not found");
+    }
     const [lead] = await tx
       .select()
       .from(leads)
@@ -56,7 +159,7 @@ export async function changeStage(formData: FormData) {
       .limit(1);
     if (!lead) throw new Error("Lead not found");
 
-    const check = checkTransition(lead.stage as LeadStage, toStage);
+    const check = checkTransition(lead.stage as LeadStage, toStage as LeadStage);
     if (!check.allowed) throw new Error(check.reason ?? "Transition not allowed");
     if (check.requiresReason && !reason) throw new Error("A reason is required for this change");
 
@@ -93,13 +196,12 @@ export async function changeStage(formData: FormData) {
       .update(leads)
       .set({
         stage: toStage as never,
-        lostReason: null,
+        lostReason: isTerminalChange ? (reasonCode as never) : null,
+        lostNotes: isTerminalChange ? reason : null,
         lastActivityAt: now,
         updatedAt: now,
         ...(isFirstContact ? { firstContactedAt: now, firstResponseSeconds } : {}),
-        ...(toStage === "booked" || toStage === "lost" || toStage === "disqualified"
-          ? { closedAt: now }
-          : {}),
+        ...(isTerminalChange ? { closedAt: now } : { closedAt: null }),
       })
       .where(eq(leads.id, leadId));
 
@@ -136,47 +238,76 @@ export async function changeStage(formData: FormData) {
  * true — so it is also the moment the conversion fires.
  */
 export async function checkInVisit(formData: FormData) {
-  const user = await requireUser();
-  const leadId = String(formData.get("leadId"));
-  const visitType = String(formData.get("visitType") || "corporate_office");
-  const accompanying = Number(formData.get("accompanyingCount") ?? 0) || 0;
-  const intentRating = Number(formData.get("intentRating") ?? 0) || null;
-  const notes = String(formData.get("notes") ?? "").trim() || null;
-  const checkInMethod = String(formData.get("checkInMethod") || "manual");
+  const user = await requirePermission("visits:write");
+  const input = z.object({
+    leadId: z.string().uuid(),
+    visitId: z.preprocess((value) => String(value ?? "").trim() || randomUUID(), z.string().uuid()),
+    visitType: z.enum(["corporate_office", "project_site", "experience_centre", "virtual"]),
+    accompanying: z.coerce.number().int().min(0).max(20),
+    intentRating: z.preprocess((value) => String(value ?? "").trim() || undefined, z.coerce.number().int().min(1).max(5).optional()),
+    notes: z.preprocess((value) => String(value ?? "").trim() || undefined, z.string().max(2000).optional()),
+    configurationsViewed: z.preprocess((value) => String(value ?? "").split(",").map((item) => item.trim()).filter(Boolean), z.array(z.string().max(120)).max(20)),
+    nextAction: z.preprocess((value) => String(value ?? "").trim() || undefined, z.string().max(300).optional()),
+    checkInMethod: z.enum(["manual", "qr", "geofence"]),
+  }).safeParse({
+    leadId: formData.get("leadId"), visitId: formData.get("visitId"),
+    visitType: formData.get("visitType") || "corporate_office",
+    accompanying: formData.get("accompanyingCount") || 0,
+    intentRating: formData.get("intentRating"), notes: formData.get("notes"),
+    configurationsViewed: formData.get("configurationsViewed"), nextAction: formData.get("nextAction"),
+    checkInMethod: formData.get("checkInMethod") || "manual",
+  });
+  if (!input.success) throw new Error("Invalid check-in details");
+  const { leadId, visitId, visitType, accompanying, intentRating, notes, configurationsViewed, nextAction, checkInMethod } = input.data;
 
   const db = getDb();
-  const visitId = randomUUID();
-
   await db.transaction(async (tx) => {
+    if (!(await lockLeadForUpdate(tx, user.orgId, leadId, user))) {
+      throw new Error("Lead not found");
+    }
     const [lead] = await tx
-      .select()
+      .select({
+        id: leads.id, personId: leads.personId, projectId: leads.projectId,
+        stage: leads.stage, firstTouchpointId: leads.firstTouchpointId,
+        attributionExpiresAt: leadTouchpoints.attributionExpiresAt,
+      })
       .from(leads)
+      .leftJoin(leadTouchpoints, eq(leadTouchpoints.id, leads.firstTouchpointId))
       .where(and(eq(leads.id, leadId), eq(leads.orgId, user.orgId)))
       .limit(1);
     if (!lead) throw new Error("Lead not found");
+    if (!lead.projectId) throw new Error("Assign a project before checking in this visitor");
 
     const now = new Date();
 
-    await tx.insert(visits).values({
+    const inserted = await tx.insert(visits).values({
       id: visitId,
       orgId: user.orgId,
       leadId,
       personId: lead.personId,
       projectId: lead.projectId,
       type: visitType as never,
-      status: "completed",
+      status: "arrived",
       arrivedAt: now,
       hostUserId: user.id,
       accompanyingCount: accompanying,
-      intentRating,
-      notes,
+      intentRating: intentRating ?? null,
+      configurationsViewed: configurationsViewed.length ? configurationsViewed : null,
+      nextAction: nextAction ?? null,
+      notes: notes ?? null,
       checkInMethod,
       createdByUserId: user.id,
-    });
+    }).onConflictDoNothing().returning({ id: visits.id });
+
+    // The form carries a stable visit id. A browser retry or double tap reaches
+    // this branch but cannot create a second visit or conversion.
+    if (inserted.length === 0) return;
 
     // Only advance the stage; never pull a negotiating lead back to `visited`
     // just because they came in again.
-    const shouldAdvance = ["new", "contacted", "qualified", "visit_scheduled"].includes(lead.stage);
+    const physicalVisit = visitType !== "virtual";
+    const shouldAdvance = physicalVisit && ["new", "contacted", "qualified", "visit_scheduled"].includes(lead.stage);
+    const resultingLeadStage = shouldAdvance ? "visited" : lead.stage;
     if (shouldAdvance) {
       await tx.insert(leadStageHistory).values({
         id: randomUUID(),
@@ -199,23 +330,23 @@ export async function checkInVisit(formData: FormData) {
         .where(eq(leads.id, leadId));
     }
 
-    await emitConversionEvent(tx, {
-      orgId: user.orgId,
-      eventType:
-        visitType === "project_site" ? "site_visit_completed" : "walk_in_completed",
-      personId: lead.personId,
-      leadId,
-      projectId: lead.projectId,
-      touchpointId: lead.firstTouchpointId,
-      occurredAt: now,
-      // Derived from the visit id, so a double-tapped check-in button cannot
-      // report two site visits.
-      eventKey: eventKeyFor.visitCompleted(visitId),
-      value: await modelledValue(tx, lead.projectId, "visited"),
-      stageAtEvent: "visited",
-      sourceEntityType: "visit",
-      sourceEntityId: visitId,
-    });
+    if (physicalVisit) {
+      await emitConversionEvent(tx, {
+        orgId: user.orgId,
+        eventType: visitType === "project_site" ? "site_visit_completed" : "walk_in_completed",
+        personId: lead.personId,
+        leadId,
+        projectId: lead.projectId,
+        touchpointId: lead.firstTouchpointId,
+        occurredAt: now,
+        eventKey: eventKeyFor.visitCompleted(visitId),
+        value: await modelledValue(tx, lead.projectId, "visited"),
+        stageAtEvent: resultingLeadStage,
+        sourceEntityType: "visit",
+        sourceEntityId: visitId,
+        attributionExpiresAt: lead.attributionExpiresAt,
+      });
+    }
   });
 
   revalidatePath(`/leads/${leadId}`);
@@ -224,19 +355,33 @@ export async function checkInVisit(formData: FormData) {
 }
 
 export async function logActivity(formData: FormData) {
-  const user = await requireUser();
-  const leadId = String(formData.get("leadId"));
-  const type = String(formData.get("type") || "note");
-  const body = String(formData.get("body") ?? "").trim();
-  const outcome = String(formData.get("callOutcome") ?? "").trim() || null;
-  const followUp = String(formData.get("nextFollowUpAt") ?? "").trim();
+  const user = await requirePermission("leads:write");
+  const parsed = z.object({
+    leadId: z.string().uuid(),
+    type: z.enum(["call", "whatsapp", "note", "email", "meeting"]),
+    body: z.string().trim().max(5000),
+    outcome: z.preprocess((value) => String(value ?? "").trim() || undefined, z.enum(["connected", "no_answer", "busy", "switched_off", "invalid"]).optional()),
+    followUp: z.preprocess(
+      (value) => String(value ?? "").trim() || undefined,
+      localDateTimeSchema.optional(),
+    ),
+  }).safeParse({ leadId: formData.get("leadId"), type: formData.get("type") || "note", body: formData.get("body") || "", outcome: formData.get("callOutcome"), followUp: formData.get("nextFollowUpAt") });
+  if (!parsed.success) throw new Error("Invalid activity details");
+  const { leadId, type, body, outcome } = parsed.data;
+  const followUp = parsed.data.followUp
+    ? parseLocalDateTime(parsed.data.followUp, user.timezone)
+    : undefined;
+  if (parsed.data.followUp && !followUp) throw new Error("Invalid follow-up time");
 
-  if (!body && !outcome) return;
+  if (!body && !outcome && !followUp) return;
 
   const db = getDb();
   const now = new Date();
 
   await db.transaction(async (tx) => {
+    if (!(await lockLeadForUpdate(tx, user.orgId, leadId, user))) {
+      throw new Error("Lead not found");
+    }
     const [lead] = await tx
       .select({ personId: leads.personId })
       .from(leads)
@@ -244,25 +389,20 @@ export async function logActivity(formData: FormData) {
       .limit(1);
     if (!lead) throw new Error("Lead not found");
 
-    await tx.insert(activities).values({
-      id: randomUUID(),
-      orgId: user.orgId,
-      leadId,
-      personId: lead.personId,
-      type,
-      direction: type === "call" ? "outbound" : null,
-      body: body || null,
-      callOutcome: outcome,
-      userId: user.id,
-      occurredAt: now,
-    });
+    if (body || outcome) {
+      await tx.insert(activities).values({
+        id: randomUUID(), orgId: user.orgId, leadId, personId: lead.personId, type,
+        direction: type === "call" ? "outbound" : null, body: body || null,
+        callOutcome: outcome ?? null, userId: user.id, occurredAt: now,
+      });
+    }
 
     await tx
       .update(leads)
       .set({
         lastActivityAt: now,
         updatedAt: now,
-        ...(followUp ? { nextFollowUpAt: new Date(followUp) } : {}),
+        ...(followUp ? { nextFollowUpAt: followUp } : {}),
       })
       .where(eq(leads.id, leadId));
   });
@@ -271,18 +411,34 @@ export async function logActivity(formData: FormData) {
 }
 
 export async function assignLead(formData: FormData) {
-  const user = await requireUser();
-  const leadId = String(formData.get("leadId"));
-  const toUserId = String(formData.get("toUserId") || "") || null;
+  const user = await requirePermission("leads:assign");
+  const parsed = z.object({
+    leadId: z.string().uuid(),
+    toUserId: z.preprocess((value) => String(value ?? "").trim() || null, z.string().uuid().nullable()),
+  }).safeParse({ leadId: formData.get("leadId"), toUserId: formData.get("toUserId") });
+  if (!parsed.success) throw new Error("Invalid assignment");
+  const { leadId, toUserId } = parsed.data;
 
   const db = getDb();
   await db.transaction(async (tx) => {
+    if (!(await lockLeadForUpdate(tx, user.orgId, leadId, user))) {
+      throw new Error("Lead not found");
+    }
     const [lead] = await tx
       .select({ ownerUserId: leads.ownerUserId })
       .from(leads)
       .where(and(eq(leads.id, leadId), eq(leads.orgId, user.orgId)))
       .limit(1);
     if (!lead) throw new Error("Lead not found");
+
+    if (toUserId) {
+      const [assignee] = await tx
+        .select({ id: users.id })
+        .from(users)
+        .where(and(eq(users.id, toUserId), eq(users.orgId, user.orgId), eq(users.isActive, true)))
+        .limit(1);
+      if (!assignee) throw new Error("Assignee not found");
+    }
 
     await tx.execute(sql`
       INSERT INTO lead_assignments (id, org_id, lead_id, from_user_id, to_user_id, rule, reason)

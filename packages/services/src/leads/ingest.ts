@@ -45,6 +45,21 @@ export interface IngestLeadInput {
     id?: string | null;
   };
 
+  adHierarchy?: {
+    platform?: string | null;
+    campaignId?: string | null;
+    campaignName?: string | null;
+    adsetId?: string | null;
+    adsetName?: string | null;
+    adId?: string | null;
+    adName?: string | null;
+    creativeId?: string | null;
+    creativeName?: string | null;
+    keyword?: string | null;
+    matchType?: string | null;
+    placement?: string | null;
+  };
+
   clickIds?: {
     gclid?: string | null;
     gbraid?: string | null;
@@ -145,6 +160,20 @@ export async function ingestLead(tx: Tx, input: IngestLeadInput): Promise<Ingest
   if (identity.externalId) lookups.push({ type: "external_id", value: identity.externalId });
   if (identity.metaLeadId) lookups.push({ type: "meta_lead_id", value: identity.metaLeadId });
 
+  // Serialize lookup + claim for each normalized identity. A unique index is
+  // too late on its own: two transactions could both create a person before
+  // one loses the identifier upsert and continues with an orphan duplicate.
+  const identityLockKeys = [
+    ...new Set(lookups.map((lookup) => `${input.orgId}:${lookup.type}:${lookup.value}`)),
+  ].sort();
+  for (const lockKey of identityLockKeys) {
+    await tx.execute(sql`
+      SELECT pg_advisory_xact_lock(
+        hashtextextended(${lockKey}, 0)
+      )
+    `);
+  }
+
   let matches: IdentifierMatch[] = [];
   if (lookups.length > 0) {
     const found = await tx
@@ -216,9 +245,10 @@ export async function ingestLead(tx: Tx, input: IngestLeadInput): Promise<Ingest
       .where(eq(persons.id, personId));
   }
 
-  // Attach identifiers. The unique index on (org, type, normalized value) is
-  // what actually enforces deduplication under concurrent submissions — two
-  // simultaneous forms with the same phone cannot create two people.
+  // Attach identifiers after resolution. The advisory locks above serialize
+  // the lookup/create decision; the unique index remains the final invariant
+  // that one normalized identifier row has only one owner. Any other writer of
+  // person_identifiers must follow the same advisory-lock protocol.
   const identifierRows = [];
   if (identity.phone) {
     identifierRows.push({
@@ -240,6 +270,17 @@ export async function ingestLead(tx: Tx, input: IngestLeadInput): Promise<Ingest
       valueNormalized: identity.email.normalized,
       valueHash: identity.email.hash,
       valueRaw: identity.email.raw,
+    });
+  }
+  if (identity.externalId) {
+    identifierRows.push({
+      id: randomUUID(),
+      orgId: input.orgId,
+      personId,
+      type: "external_id" as const,
+      valueNormalized: identity.externalId,
+      valueHash: "",
+      valueRaw: identity.externalId,
     });
   }
   if (identity.metaLeadId) {
@@ -331,7 +372,18 @@ export async function ingestLead(tx: Tx, input: IngestLeadInput): Promise<Ingest
     metaLeadId: clickIds.metaLeadId ?? null,
     msclkid: clickIds.msclkid ?? null,
     liFatId: clickIds.liFatId ?? null,
-    adPlatform: inferAdPlatform(clickIds, input.utm?.source),
+    adPlatform: input.adHierarchy?.platform ?? inferAdPlatform(clickIds, input.utm?.source),
+    campaignId: input.adHierarchy?.campaignId ?? input.utm?.id ?? null,
+    campaignName: input.adHierarchy?.campaignName ?? input.utm?.campaign ?? null,
+    adsetId: input.adHierarchy?.adsetId ?? null,
+    adsetName: input.adHierarchy?.adsetName ?? null,
+    adId: input.adHierarchy?.adId ?? null,
+    adName: input.adHierarchy?.adName ?? null,
+    creativeId: input.adHierarchy?.creativeId ?? null,
+    creativeName: input.adHierarchy?.creativeName ?? input.utm?.content ?? null,
+    keyword: input.adHierarchy?.keyword ?? input.utm?.term ?? null,
+    matchType: input.adHierarchy?.matchType ?? null,
+    placement: input.adHierarchy?.placement ?? null,
     landingPage: input.landingPage ?? null,
     referrer: input.referrer ?? null,
     userAgent: input.userAgent ?? null,

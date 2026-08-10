@@ -16,7 +16,8 @@ import {
   type FollowUpChannel,
 } from "@/lib/follow-ups";
 import { StageWorkflowDialog } from "@/components/stage-workflow-dialog";
-import { WORKFLOW_STAGE_HINT, isEditableStage } from "@/lib/stage-edit";
+import { siteVisitLabel } from "@/lib/site-visits";
+import { WORKFLOW_STAGE_HINT, isEditableStage, isRegressableStage } from "@/lib/stage-edit";
 
 export interface PipelineCard {
   id: string;
@@ -26,6 +27,8 @@ export interface PipelineCard {
   ownerName: string | null;
   attributionExpiresAt: string | null;
   nextFollowUpAt: string | null;
+  /** Non-cancelled project-site visits already on the books. */
+  siteVisitCount: number;
 }
 
 /** Pointer travel that turns a mouse press into a drag rather than a click. */
@@ -70,8 +73,12 @@ type TargetState = "idle" | "ok" | "workflow" | "blocked";
  * that ended with something agreed, and that agreement is the single most
  * useful thing the CRM can capture — so the board asks for it at the moment it
  * is still fresh, rather than hoping somebody types it in later.
+ *
+ * Booked is the end of the sales motion: the next step lives on the booking,
+ * not on a follow-up task, so the dialog stops asking there.
  */
 function needsFollowUp(toStage: string): boolean {
+  if (toStage === "booked" || toStage === "lost" || toStage === "disqualified") return false;
   return stageRank(toStage as LeadStage) > STAGE_ORDER.contacted;
 }
 
@@ -82,20 +89,24 @@ export interface StageMoveDetails {
   followUpNote?: string;
   followUpCommitment?: string;
   siteVisitAt?: string;
-  siteVisitUnits?: string;
-  siteVisitIntent?: string;
   siteVisitNotes?: string;
 }
 
 function targetState(stage: string, card: PipelineCard | null): TargetState {
   if (!card || stage === card.stage) return "idle";
+  const check = checkTransition(card.stage as LeadStage, stage as LeadStage);
+  // A regression onto a workflow column is a correction with a reason, not a
+  // fresh visit/booking — highlight it as droppable instead of dimming it.
+  if (!isEditableStage(stage) && check.allowed && check.isRegression && isRegressableStage(stage)) {
+    return "ok";
+  }
   // Distinct from "blocked": the drop is accepted, it just opens a short form
   // first. Dimming these the way a genuinely impossible target is dimmed would
   // keep telling people not to try the thing that now works.
   if (!isEditableStage(stage)) {
     return WORKFLOW_STAGE_HINT[stage as LeadStage] ? "workflow" : "blocked";
   }
-  return checkTransition(card.stage as LeadStage, stage as LeadStage).allowed ? "ok" : "blocked";
+  return check.allowed ? "ok" : "blocked";
 }
 
 export function PipelineBoard({
@@ -167,12 +178,17 @@ export function PipelineBoard({
               ? `${card.name} moved to ${stageLabel(toStage)} · follow-up set`
               : `${card.name} moved to ${stageLabel(toStage)}`,
           );
+          // useOptimistic rolls back when the transition ends; without a
+          // refresh the board would snap to the stale RSC props even though
+          // the database already moved.
+          router.refresh();
         } else {
           toast.error(result.message ?? "Could not move the lead");
+          router.refresh();
         }
       });
     },
-    [applyMove],
+    [applyMove, router],
   );
 
   /**
@@ -184,17 +200,21 @@ export function PipelineBoard({
   const attemptMove = useCallback(
     (card: PipelineCard, toStage: string) => {
       if (toStage === card.stage) return;
-      // Workflow-backed stages open their workflow instead of refusing. The
-      // rule has not changed — the visit or booking row still has to exist —
-      // but the board now asks for it rather than sending someone away.
-      if (!isEditableStage(toStage)) {
-        if (WORKFLOW_STAGE_HINT[toStage as LeadStage]) setWorkflow({ card, toStage });
-        else toast.error("That stage is set by its own workflow");
-        return;
-      }
       const check = checkTransition(card.stage as LeadStage, toStage as LeadStage);
       if (!check.allowed) {
         toast.error(check.reason ?? "That move is not allowed");
+        return;
+      }
+      // Dragging backwards onto Visited / Visit Scheduled is a funnel
+      // correction. The check-in and schedule workflows only ever advance, so
+      // opening them here left the card stuck in Negotiating after a refresh.
+      if (!isEditableStage(toStage)) {
+        if (check.isRegression && isRegressableStage(toStage)) {
+          setPrompt({ card, toStage });
+          return;
+        }
+        if (WORKFLOW_STAGE_HINT[toStage as LeadStage]) setWorkflow({ card, toStage });
+        else toast.error("That stage is set by its own workflow");
         return;
       }
       // Every move asks, so the follow-up list can be trusted: a stage that
@@ -620,9 +640,12 @@ function defaultFollowUpAt(): string {
   return toLocalInput(at);
 }
 
-/** A site visit being logged from the board almost always just happened. */
-function nowLocalInput(): string {
-  return toLocalInput(new Date());
+/** A site visit agreed on a call is usually a few days out, not today. */
+function defaultSiteVisitAt(): string {
+  const at = new Date();
+  at.setDate(at.getDate() + 2);
+  at.setHours(11, 0, 0, 0);
+  return toLocalInput(at);
 }
 
 /**
@@ -646,8 +669,8 @@ function StageMoveDialog({
   onConfirm: (details: StageMoveDetails) => void;
 }) {
   const regression = checkTransition(card.stage as LeadStage, toStage as LeadStage).requiresReason;
-  // Always asked. `lateStage` only changes how insistently it is framed.
-  const followUp = true;
+  // Ask until Booked / closed — those stages have their own next step (or none).
+  const followUp = toStage !== "booked" && toStage !== "lost" && toStage !== "disqualified";
   const lateStage = needsFollowUp(toStage);
 
   const [reason, setReason] = useState("");
@@ -656,9 +679,7 @@ function StageMoveDialog({
   const [note, setNote] = useState("");
   const [commitment, setCommitment] = useState("");
   const [logSiteVisit, setLogSiteVisit] = useState(false);
-  const [siteVisitAt, setSiteVisitAt] = useState(nowLocalInput);
-  const [siteVisitUnits, setSiteVisitUnits] = useState("");
-  const [siteVisitIntent, setSiteVisitIntent] = useState("");
+  const [siteVisitAt, setSiteVisitAt] = useState(defaultSiteVisitAt);
   const [siteVisitNotes, setSiteVisitNotes] = useState("");
   const firstFieldRef = useRef<HTMLInputElement | HTMLSelectElement | null>(null);
 
@@ -694,8 +715,6 @@ function StageMoveDialog({
             followUpNote: followUp && note.trim() ? note.trim() : undefined,
             followUpCommitment: followUp && commitment.trim() ? commitment.trim() : undefined,
             siteVisitAt: logSiteVisit ? siteVisitAt : undefined,
-            siteVisitUnits: logSiteVisit && siteVisitUnits.trim() ? siteVisitUnits.trim() : undefined,
-            siteVisitIntent: logSiteVisit && siteVisitIntent ? siteVisitIntent : undefined,
             siteVisitNotes: logSiteVisit && siteVisitNotes.trim() ? siteVisitNotes.trim() : undefined,
           });
         }}
@@ -791,9 +810,9 @@ function StageMoveDialog({
           </div>
         )}
 
-        {/* A conversation that happened on site is evidence, and it is only
-            ever captured if it is asked for at the moment of the move. Without
-            this the activity log quietly diverges from what the team did. */}
+        {/* Booking the next visit at the moment it is agreed is the only time
+            anyone reliably has the date. The arrival is a separate fact,
+            recorded when they turn up. */}
         <div className="mt-5 rounded-lg border border-zinc-200 p-3 dark:border-zinc-800">
           <label className="flex items-start gap-2.5">
             <input
@@ -803,10 +822,12 @@ function StageMoveDialog({
               className="mt-0.5 size-4 accent-brand-600"
             />
             <span>
-              <span className="block text-sm font-medium">They visited the project site</span>
+              <span className="block text-sm font-medium">{siteVisitLabel(card.siteVisitCount)}</span>
               <span className="block text-xs text-zinc-500">
-                Records a completed site visit and reports it as one — separate from the stage
-                change.
+                {card.siteVisitCount > 0
+                  ? `${card.siteVisitCount} site visit${card.siteVisitCount === 1 ? "" : "s"} already on record. `
+                  : ""}
+                Books the appointment and shows it on Site visits — check them in when they arrive.
               </span>
             </span>
           </label>
@@ -823,38 +844,16 @@ function StageMoveDialog({
                   className={fieldClass}
                 />
               </label>
-              <label className="block">
-                <span className="mb-1 block text-xs font-medium text-zinc-500">Intent after the visit</span>
-                <select
-                  value={siteVisitIntent}
-                  onChange={(event) => setSiteVisitIntent(event.target.value)}
-                  className={fieldClass}
-                >
-                  <option value="">Unrated</option>
-                  <option value="5">Very high</option>
-                  <option value="4">High</option>
-                  <option value="3">Medium</option>
-                  <option value="2">Low</option>
-                  <option value="1">Just looking</option>
-                </select>
-              </label>
               <label className="block sm:col-span-2">
-                <span className="mb-1 block text-xs font-medium text-zinc-500">Units seen on site</span>
-                <input
-                  value={siteVisitUnits}
-                  onChange={(event) => setSiteVisitUnits(event.target.value)}
-                  placeholder="A-804, sample flat"
-                  className={fieldClass}
-                />
-              </label>
-              <label className="block sm:col-span-2">
-                <span className="mb-1 block text-xs font-medium text-zinc-500">Site visit notes</span>
+                <span className="mb-1 block text-xs font-medium text-zinc-500">
+                  What to prepare for the visit
+                </span>
                 <textarea
                   value={siteVisitNotes}
                   onChange={(event) => setSiteVisitNotes(event.target.value)}
                   rows={2}
                   maxLength={2000}
-                  placeholder="Which tower, what they reacted to, who came along"
+                  placeholder="Which tower to show, who is coming, sample flat access"
                   className={fieldClass}
                 />
               </label>

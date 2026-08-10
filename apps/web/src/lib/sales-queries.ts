@@ -305,6 +305,11 @@ export interface CustomerListRow {
   opportunityCount: number;
   openOpportunityCount: number;
   bookingCount: number;
+  /** The opportunity the row's actions operate on: the most recently active
+   *  open one, so Promote/Disqualify act on the live deal rather than a
+   *  closed-out enquiry from last year. */
+  primaryLeadId: string | null;
+  primaryStage: string | null;
   projectNames: string | null;
   ownerNames: string | null;
   lastActivityAt: Date | string;
@@ -321,8 +326,15 @@ export interface CustomerListRow {
  */
 export type CustomerSegment = "customers" | "contacts";
 
+/**
+ * `contacts` is the default view.
+ *
+ * The buyer who has already signed is the one the team needs least often; the
+ * open enquiry is the one they came here to find. Defaulting to the booked
+ * subset meant the page usually opened empty.
+ */
 export function normalizeCustomerSegment(value?: string): CustomerSegment {
-  return value === "contacts" ? "contacts" : "customers";
+  return value === "customers" ? "customers" : "contacts";
 }
 
 /** A cancelled booking un-makes the customer, the same way it un-books the unit. */
@@ -335,6 +347,7 @@ export interface CustomerListFilters {
   ownerId?: string;
   search?: string;
   segment?: CustomerSegment;
+  includeDisqualified?: boolean;
   limit?: number;
   offset?: number;
 }
@@ -347,7 +360,23 @@ export async function listCustomers(
     sql`p.org_id = ${orgId}`,
     sql`p.merged_into_person_id IS NULL`,
   ];
-  if ((filters.segment ?? "customers") === "customers") conditions.push(hasLiveBooking);
+  if (filters.segment === "customers") conditions.push(hasLiveBooking);
+  // A contact whose only opportunities are disqualified stays out of the working
+  // list until asked for — that is the whole point of disqualifying them.
+  // People with no leads at all are unaffected.
+  if (!filters.includeDisqualified) {
+    conditions.push(sql`(
+      NOT EXISTS (
+        SELECT 1 FROM leads any_lead
+        WHERE any_lead.org_id = p.org_id AND any_lead.person_id = p.id
+      )
+      OR EXISTS (
+        SELECT 1 FROM leads live
+        WHERE live.org_id = p.org_id AND live.person_id = p.id
+          AND live.stage <> 'disqualified'
+      )
+    )`);
+  }
   if (filters.ownerId) {
     conditions.push(sql`EXISTS (
       SELECT 1 FROM leads owned
@@ -384,17 +413,29 @@ export async function listCustomers(
              SELECT COUNT(*)::int FROM bookings bk
              WHERE bk.org_id = p.org_id AND bk.person_id = p.id AND bk.status <> 'cancelled'
            ) AS "bookingCount",
+           primary_lead.id AS "primaryLeadId",
+           primary_lead.stage::text AS "primaryStage",
            STRING_AGG(DISTINCT pr.name, ', ' ORDER BY pr.name) AS "projectNames",
            STRING_AGG(DISTINCT u.name, ', ' ORDER BY u.name) AS "ownerNames",
            MAX(COALESCE(l.last_activity_at, l.updated_at, p.updated_at)) AS "lastActivityAt",
            COUNT(*) OVER()::int AS "totalCount"
     FROM persons p
+    LEFT JOIN LATERAL (
+      SELECT pl.id, pl.stage
+      FROM leads pl
+      WHERE pl.org_id = p.org_id AND pl.person_id = p.id
+        ${filters.ownerId ? sql`AND pl.owner_user_id = ${filters.ownerId}` : sql``}
+      ORDER BY
+        CASE WHEN pl.stage NOT IN ('booked', 'lost', 'disqualified') THEN 0 ELSE 1 END,
+        COALESCE(pl.last_activity_at, pl.created_at) DESC
+      LIMIT 1
+    ) primary_lead ON true
     LEFT JOIN leads l ON l.person_id = p.id AND l.org_id = p.org_id
       ${filters.ownerId ? sql`AND l.owner_user_id = ${filters.ownerId}` : sql``}
     LEFT JOIN projects pr ON pr.id = l.project_id
     LEFT JOIN users u ON u.id = l.owner_user_id
     WHERE ${sql.join(conditions, sql` AND `)}
-    GROUP BY p.id
+    GROUP BY p.id, primary_lead.id, primary_lead.stage
     ORDER BY MAX(COALESCE(l.last_activity_at, l.updated_at, p.updated_at)) DESC
     LIMIT ${limit} OFFSET ${offset}
   `);

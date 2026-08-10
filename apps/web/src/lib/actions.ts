@@ -19,11 +19,27 @@ import { localDateTimeSchema, parseLocalDateTime } from "./datetime";
 import { insertFollowUpTask, type FollowUpDraft } from "./follow-up-sync";
 import { FOLLOW_UP_CHANNELS } from "./follow-ups";
 import { lockLeadForUpdate } from "./lead-lock";
-import { EDITABLE_STAGES, LOST_REASONS, type EditableStage, type LostReason } from "./stage-edit";
+import {
+  BOARD_MOVE_STAGES,
+  EDITABLE_STAGES,
+  LOST_REASONS,
+  isEditableStage,
+  isRegressableStage,
+  type LostReason,
+} from "./stage-edit";
 
 const stageChangeSchema = z.object({
   leadId: z.string().uuid(),
   toStage: z.enum(EDITABLE_STAGES),
+  reason: z.string().trim().max(500).optional(),
+  reasonCode: z.preprocess((value) => String(value ?? "").trim() || undefined, z.enum(LOST_REASONS).optional()),
+  doNotContact: z.boolean().optional(),
+});
+
+/** Board moves may also land on visit_scheduled / visited when correcting a regression. */
+const boardMoveSchema = z.object({
+  leadId: z.string().uuid(),
+  toStage: z.enum(BOARD_MOVE_STAGES),
   reason: z.string().trim().max(500).optional(),
   reasonCode: z.preprocess((value) => String(value ?? "").trim() || undefined, z.enum(LOST_REASONS).optional()),
 });
@@ -139,9 +155,7 @@ async function modelledValue(
  */
 interface SiteVisitInput {
   visitId: string;
-  at: Date;
-  unitsViewed: string[] | null;
-  intentRating: number | null;
+  scheduledAt: Date;
   notes: string | null;
 }
 
@@ -149,7 +163,7 @@ async function applyStageChange(
   user: SessionUser,
   input: {
     leadId: string;
-    toStage: EditableStage;
+    toStage: string;
     reason: string | null;
     reasonCode?: LostReason;
     followUp?: FollowUpDraft;
@@ -160,6 +174,14 @@ async function applyStageChange(
   const reason = input.reason || null;
   const isTerminalChange = toStage === "lost" || toStage === "disqualified";
   if (isTerminalChange && !reasonCode) throw new Error("Choose a structured closing reason");
+
+  // Workflow stages are evidence-backed going forward. The only hand edit we
+  // allow is a regression with a reason — otherwise the visit/booking form
+  // would be bypassed and Meta/Google would be fed a conversion that never
+  // happened.
+  if (!isEditableStage(toStage) && !isRegressableStage(toStage)) {
+    throw new Error("That stage is set by its own workflow");
+  }
 
   const db = getDb();
 
@@ -177,6 +199,9 @@ async function applyStageChange(
     const check = checkTransition(lead.stage as LeadStage, toStage as LeadStage);
     if (!check.allowed) throw new Error(check.reason ?? "Transition not allowed");
     if (check.requiresReason && !reason) throw new Error("A reason is required for this change");
+    if (isRegressableStage(toStage) && !check.isRegression) {
+      throw new Error("That stage is set by its own workflow");
+    }
 
     const now = new Date();
     const previousAt = lead.updatedAt ?? lead.createdAt;
@@ -220,8 +245,10 @@ async function applyStageChange(
       })
       .where(eq(leads.id, leadId));
 
+    // A regression is a correction of the funnel label, not a new conversion.
+    // Emitting again would double-count visits and negotiations to the ad platforms.
     const eventType = STAGE_EVENT_MAP[toStage as ForwardStage] as ConversionEventType | undefined;
-    if (eventType) {
+    if (eventType && !check.isRegression) {
       await emitConversionEvent(tx, {
         orgId: user.orgId,
         eventType,
@@ -254,13 +281,13 @@ async function applyStageChange(
       });
     }
 
-    // A site visit recorded alongside the move. Separate from the stage change
-    // on purpose: the stage says where the deal is, the visit is evidence that
-    // somebody stood on the plot, and only the latter is worth reporting to the
-    // ad platforms as a site visit.
+    // An appointment, not an arrival. The move dialog books the next site
+    // visit; the arrival is recorded separately when they actually turn up,
+    // because "agreed to come" and "came" are different pieces of evidence and
+    // only the second one earns a `site_visit_completed`.
     if (input.siteVisit) {
       if (!lead.projectId) {
-        throw new Error("Assign a project before recording a site visit");
+        throw new Error("Assign a project before booking a site visit");
       }
       await tx.insert(visits).values({
         id: input.siteVisit.visitId,
@@ -269,25 +296,21 @@ async function applyStageChange(
         personId: lead.personId,
         projectId: lead.projectId,
         type: "project_site",
-        status: "completed",
-        arrivedAt: input.siteVisit.at,
+        status: "scheduled",
+        scheduledAt: input.siteVisit.scheduledAt,
         hostUserId: lead.ownerUserId ?? user.id,
-        unitsViewed: input.siteVisit.unitsViewed,
-        intentRating: input.siteVisit.intentRating,
         notes: input.siteVisit.notes,
-        checkInMethod: "manual",
         createdByUserId: user.id,
       });
       await emitConversionEvent(tx, {
         orgId: user.orgId,
-        eventType: "site_visit_completed",
+        eventType: "visit_scheduled",
         personId: lead.personId,
         leadId,
         projectId: lead.projectId,
         touchpointId: lead.firstTouchpointId,
-        occurredAt: input.siteVisit.at,
-        eventKey: eventKeyFor.visitCompleted(input.siteVisit.visitId),
-        value: await modelledValue(tx, lead.projectId, "visited"),
+        occurredAt: now,
+        eventKey: eventKeyFor.visitScheduled(input.siteVisit.visitId),
         stageAtEvent: toStage,
         sourceEntityType: "visit",
         sourceEntityId: input.siteVisit.visitId,
@@ -309,6 +332,7 @@ export async function changeStage(formData: FormData) {
     toStage: formData.get("toStage"),
     reason: formData.get("reason"),
     reasonCode: formData.get("reasonCode"),
+    doNotContact: formData.get("doNotContact") === "on",
   });
   if (!parsed.success) throw new Error("Invalid stage change");
 
@@ -318,11 +342,135 @@ export async function changeStage(formData: FormData) {
     reason: parsed.data.reason ?? null,
     reasonCode: parsed.data.reasonCode,
   });
+
+  // Same person-level suppression the Disqualify button uses — selecting
+  // Disqualified from the stage dropdown must not skip the do-not-contact path.
+  if (parsed.data.toStage === "disqualified" && parsed.data.doNotContact) {
+    await getDb().execute(sql`
+      UPDATE persons
+      SET is_suppressed = true,
+          suppression_reason = ${parsed.data.reason ?? "Disqualified"},
+          updated_at = now()
+      WHERE org_id = ${user.orgId}
+        AND id = (
+          SELECT person_id FROM leads
+          WHERE id = ${parsed.data.leadId} AND org_id = ${user.orgId}
+        )
+    `);
+    revalidatePath("/customers");
+  }
 }
 
 export interface StageMoveResult {
   ok: boolean;
   message?: string;
+}
+
+export interface LeadActionState {
+  ok: boolean;
+  message?: string;
+}
+
+/**
+ * Disqualification, from wherever it is triggered.
+ *
+ * One action behind every surface — the lead page, the customer list, the stage
+ * dropdown — because the three things it does have to happen together: the
+ * structured reason (which feeds campaign quality reporting), the stage change
+ * (which stops the lead appearing in work queues), and optionally the
+ * do-not-contact flag.
+ *
+ * Do-not-contact is deliberately set on the PERSON, not the lead. Somebody who
+ * asks not to be contacted means it for every enquiry they have ever made, and
+ * a per-lead flag would let the next enquiry call them anyway.
+ */
+export async function disqualifyLead(
+  _previous: LeadActionState,
+  formData: FormData,
+): Promise<LeadActionState> {
+  const user = await requirePermission("leads:write");
+  const parsed = z
+    .object({
+      leadId: z.string().uuid(),
+      reasonCode: z.enum(LOST_REASONS),
+      reason: z.string().trim().min(3, "Add a short explanation").max(500),
+      doNotContact: z.boolean(),
+    })
+    .safeParse({
+      leadId: formData.get("leadId"),
+      reasonCode: formData.get("reasonCode"),
+      reason: formData.get("reason"),
+      doNotContact: formData.get("doNotContact") === "on",
+    });
+  if (!parsed.success) {
+    return { ok: false, message: parsed.error.issues[0]?.message ?? "Choose a reason" };
+  }
+
+  try {
+    await applyStageChange(user, {
+      leadId: parsed.data.leadId,
+      toStage: "disqualified",
+      reason: parsed.data.reason,
+      reasonCode: parsed.data.reasonCode,
+    });
+    if (parsed.data.doNotContact) {
+      await getDb().execute(sql`
+        UPDATE persons
+        SET is_suppressed = true,
+            suppression_reason = ${parsed.data.reason},
+            updated_at = now()
+        WHERE org_id = ${user.orgId}
+          AND id = (
+            SELECT person_id FROM leads
+            WHERE id = ${parsed.data.leadId} AND org_id = ${user.orgId}
+          )
+      `);
+    }
+  } catch (error) {
+    return { ok: false, message: error instanceof Error ? error.message : "Could not disqualify this lead" };
+  }
+
+  revalidatePath("/customers");
+  revalidatePath("/leads");
+  revalidatePath("/pipeline");
+  revalidatePath("/follow-ups");
+  revalidatePath(`/leads/${parsed.data.leadId}`);
+  return {
+    ok: true,
+    message: parsed.data.doNotContact ? "Disqualified and marked do not contact" : "Lead disqualified",
+  };
+}
+
+/**
+ * Advance one rung. Only the stages a person may set by hand — anything backed
+ * by a visit or money still has to go through its own workflow, so this refuses
+ * rather than faking the evidence.
+ */
+export async function promoteLead(
+  _previous: LeadActionState,
+  formData: FormData,
+): Promise<LeadActionState> {
+  const user = await requirePermission("leads:write");
+  const parsed = z
+    .object({ leadId: z.string().uuid(), toStage: z.enum(EDITABLE_STAGES) })
+    .safeParse({ leadId: formData.get("leadId"), toStage: formData.get("toStage") });
+  if (!parsed.success) {
+    return { ok: false, message: "That stage is set by its own workflow — open the lead to record it" };
+  }
+
+  try {
+    await applyStageChange(user, {
+      leadId: parsed.data.leadId,
+      toStage: parsed.data.toStage,
+      reason: null,
+    });
+  } catch (error) {
+    return { ok: false, message: error instanceof Error ? error.message : "Could not move this lead" };
+  }
+  revalidatePath("/customers");
+  revalidatePath("/leads");
+  revalidatePath("/pipeline");
+  return { ok: true, message: `Moved to ${parsed.data.toStage.replace(/_/g, " ")}` };
 }
 
 /**
@@ -355,12 +503,10 @@ export async function moveLeadStage(input: {
   followUpNote?: string;
   followUpCommitment?: string;
   siteVisitAt?: string;
-  siteVisitUnits?: string;
-  siteVisitIntent?: string;
   siteVisitNotes?: string;
 }): Promise<StageMoveResult> {
   const user = await requirePermission("leads:write");
-  const parsed = stageChangeSchema.safeParse({
+  const parsed = boardMoveSchema.safeParse({
     leadId: input.leadId,
     toStage: input.toStage,
     reason: input.reason,
@@ -375,14 +521,6 @@ export async function moveLeadStage(input: {
     const parsedSiteVisit = z
       .object({
         siteVisitAt: localDateTimeSchema,
-        siteVisitUnits: z.preprocess(
-          (value) => String(value ?? "").split(",").map((item) => item.trim()).filter(Boolean),
-          z.array(z.string().max(120)).max(20),
-        ),
-        siteVisitIntent: z.preprocess(
-          (value) => String(value ?? "").trim() || undefined,
-          z.coerce.number().int().min(1).max(5).optional(),
-        ),
         siteVisitNotes: z.preprocess(
           (value) => String(value ?? "").trim() || undefined,
           z.string().max(2000).optional(),
@@ -390,25 +528,21 @@ export async function moveLeadStage(input: {
       })
       .safeParse({
         siteVisitAt: input.siteVisitAt,
-        siteVisitUnits: input.siteVisitUnits,
-        siteVisitIntent: input.siteVisitIntent,
         siteVisitNotes: input.siteVisitNotes,
       });
     if (!parsedSiteVisit.success) {
       return { ok: false, message: parsedSiteVisit.error.issues[0]?.message ?? "Check the site visit details" };
     }
-    const at = parseLocalDateTime(parsedSiteVisit.data.siteVisitAt, user.timezone);
-    if (!at) return { ok: false, message: "Choose a valid site visit time" };
-    // A visit that has not happened yet is an appointment, and appointments are
-    // scheduled, not recorded as completed.
-    if (at.getTime() > Date.now() + 60_000) {
-      return { ok: false, message: "A recorded site visit cannot be in the future — schedule it instead" };
+    const scheduledAt = parseLocalDateTime(parsedSiteVisit.data.siteVisitAt, user.timezone);
+    if (!scheduledAt) return { ok: false, message: "Choose a valid site visit time" };
+    // An appointment in the past is either a typo or an arrival that should be
+    // checked in, and neither should be booked as an upcoming visit.
+    if (scheduledAt.getTime() < Date.now() - 60_000) {
+      return { ok: false, message: "Book the site visit for a future time — record a past one as a check-in" };
     }
     siteVisit = {
       visitId: randomUUID(),
-      at,
-      unitsViewed: parsedSiteVisit.data.siteVisitUnits.length ? parsedSiteVisit.data.siteVisitUnits : null,
-      intentRating: parsedSiteVisit.data.siteVisitIntent ?? null,
+      scheduledAt,
       notes: parsedSiteVisit.data.siteVisitNotes ?? null,
     };
   }

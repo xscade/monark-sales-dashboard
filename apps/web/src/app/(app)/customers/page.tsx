@@ -8,7 +8,8 @@ import {
   resolveSalesOwnerFilter,
 } from "@/lib/sales-queries";
 import { formatNumber, formatRelative, maskPhoneDisplay } from "@/lib/format";
-import { Card, DataTable, EmptyState, Td, Th } from "@/components/ui";
+import { Card, DataTable, EmptyState, StageBadge, Td, Th } from "@/components/ui";
+import { LeadActions } from "@/components/lead-actions";
 
 export const dynamic = "force-dynamic";
 
@@ -17,12 +18,14 @@ const PAGE_SIZE = 50;
 export default async function CustomersPage({
   searchParams,
 }: {
-  searchParams: Promise<{ owner?: string; q?: string; page?: string; segment?: string }>;
+  searchParams: Promise<{ owner?: string; q?: string; page?: string; segment?: string; disqualified?: string }>;
 }) {
   const user = await requirePermission("customers:read");
   const params = await searchParams;
   const page = Math.max(1, Number(params.page ?? 1) || 1);
   const segment = normalizeCustomerSegment(params.segment);
+  const includeDisqualified = params.disqualified === "1";
+  const mayWrite = can(user, "leads:write");
   const teamView = canViewSalesTeam(user.role);
   const ownerId = resolveSalesOwnerFilter(user.role, user.id, params.owner);
   const [customers, owners] = await Promise.all([
@@ -30,6 +33,7 @@ export default async function CustomersPage({
       ownerId,
       search: params.q,
       segment,
+      includeDisqualified,
       limit: PAGE_SIZE,
       offset: (page - 1) * PAGE_SIZE,
     }),
@@ -42,7 +46,9 @@ export default async function CustomersPage({
     const query = new URLSearchParams();
     if (params.q) query.set("q", params.q);
     if (params.owner) query.set("owner", params.owner);
-    if (nextSegment === "contacts") query.set("segment", "contacts");
+    // Only the non-default segment needs to appear in the URL.
+    if (nextSegment === "customers") query.set("segment", "customers");
+    if (includeDisqualified) query.set("disqualified", "1");
     if (nextPage > 1) query.set("page", String(nextPage));
     const suffix = query.toString();
     return suffix ? `/customers?${suffix}` : "/customers";
@@ -64,7 +70,7 @@ export default async function CustomersPage({
               team needs the address book too — but the word has to mean
               something, or the count on this page answers no question at all. */}
           <div className="mt-2 inline-flex rounded-lg border border-zinc-300 p-0.5 text-xs dark:border-zinc-700">
-            {(["customers", "contacts"] as const).map((option) => (
+            {(["contacts", "customers"] as const).map((option) => (
               <Link
                 key={option}
                 href={buildHref(1, option)}
@@ -79,6 +85,21 @@ export default async function CustomersPage({
               </Link>
             ))}
           </div>
+          <Link
+            href={(() => {
+              const query = new URLSearchParams();
+              if (params.q) query.set("q", params.q);
+              if (params.owner) query.set("owner", params.owner);
+              if (segment === "customers") query.set("segment", "customers");
+              if (!includeDisqualified) query.set("disqualified", "1");
+              const suffix = query.toString();
+              return suffix ? `/customers?${suffix}` : "/customers";
+            })()}
+            className="ml-2 inline-flex items-center gap-1.5 rounded-lg border border-zinc-300 px-2.5 py-1 text-xs font-medium transition hover:bg-zinc-50 dark:border-zinc-700 dark:hover:bg-zinc-800"
+          >
+            <input type="checkbox" readOnly checked={includeDisqualified} className="size-3.5 accent-brand-600" />
+            Show disqualified
+          </Link>
         </div>
         <div className="flex flex-wrap items-center gap-2">
           {can(user, "visits:write") && <Link
@@ -126,7 +147,7 @@ export default async function CustomersPage({
             title={segment === "customers" ? "No customers yet" : "No contacts match"}
             hint={
               segment === "customers"
-                ? "A contact becomes a customer when their booking is confirmed. Switch to All contacts to see open enquiries."
+                ? "A contact becomes a customer when their booking is confirmed. Switch to All contacts to see open enquiries. This is the list WhatsApp marketing will draw on."
                 : "Try clearing the search or owner filter."
             }
           />
@@ -137,8 +158,10 @@ export default async function CustomersPage({
                 <Th>Customer</Th>
                 <Th>Projects</Th>
                 <Th>Owner</Th>
+                <Th>Status</Th>
                 <Th className="text-right">Opportunities</Th>
                 <Th>Last activity</Th>
+                {mayWrite && <Th>Actions</Th>}
               </tr>
             </thead>
             <tbody className="divide-y divide-zinc-100 dark:divide-zinc-800">
@@ -180,6 +203,9 @@ export default async function CustomersPage({
                   <Td className="max-w-48 truncate text-zinc-600 dark:text-zinc-400">
                     {customer.ownerNames ?? "Unassigned"}
                   </Td>
+                  <Td>
+                    {customer.primaryStage ? <StageBadge stage={customer.primaryStage} /> : "—"}
+                  </Td>
                   <Td className="tabular text-right">
                     <span className="font-medium">{customer.openOpportunityCount}</span>
                     <span className="text-zinc-400"> / {customer.opportunityCount}</span>
@@ -187,6 +213,19 @@ export default async function CustomersPage({
                   <Td className="whitespace-nowrap text-zinc-500">
                     {formatRelative(customer.lastActivityAt)}
                   </Td>
+                  {mayWrite && (
+                    <Td>
+                      {customer.primaryLeadId && customer.primaryStage ? (
+                        <LeadActions
+                          leadId={customer.primaryLeadId}
+                          leadName={customer.fullName ?? "this contact"}
+                          stage={customer.primaryStage}
+                          showPromote
+                          compact
+                        />
+                      ) : null}
+                    </Td>
+                  )}
                 </tr>
               ))}
             </tbody>

@@ -16,11 +16,12 @@ const PAGE_SIZE = 50;
 export default async function LeadsPage({
   searchParams,
 }: {
-  searchParams: Promise<{ stage?: string; owner?: string; q?: string; page?: string }>;
+  searchParams: Promise<{ stage?: string; owner?: string; q?: string; page?: string; disqualified?: string }>;
 }) {
   const user = await requirePermission("leads:read");
   const params = await searchParams;
   const page = Math.max(1, Number(params.page ?? 1) || 1);
+  const includeDisqualified = params.disqualified === "1";
   const teamView = canViewSalesTeam(user.role);
   const ownerId = resolveSalesOwnerFilter(user.role, user.id, params.owner);
 
@@ -28,6 +29,7 @@ export default async function LeadsPage({
     stage: params.stage,
     ownerId,
     search: params.q,
+    includeDisqualified,
     limit: PAGE_SIZE,
     offset: (page - 1) * PAGE_SIZE,
   };
@@ -42,7 +44,14 @@ export default async function LeadsPage({
 
   const buildHref = (overrides: Record<string, string | undefined>) => {
     const next = new URLSearchParams();
-    const merged = { stage: params.stage, owner: params.owner, q: params.q, page: undefined, ...overrides };
+    const merged = {
+      stage: params.stage,
+      owner: params.owner,
+      q: params.q,
+      disqualified: includeDisqualified ? "1" : undefined,
+      page: undefined,
+      ...overrides,
+    };
     for (const [k, v] of Object.entries(merged)) if (v) next.set(k, v);
     const qs = next.toString();
     return qs ? `/leads?${qs}` : "/leads";
@@ -53,11 +62,22 @@ export default async function LeadsPage({
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
           <p className="mt-0.5 text-sm text-zinc-500">{formatNumber(total)} matching</p>
+          <Link
+            href={buildHref({
+              disqualified: includeDisqualified ? undefined : "1",
+              page: undefined,
+            })}
+            className="mt-2 inline-flex items-center gap-1.5 rounded-lg border border-zinc-300 px-2.5 py-1 text-xs font-medium transition hover:bg-zinc-50 dark:border-zinc-700 dark:hover:bg-zinc-800"
+          >
+            <input type="checkbox" readOnly checked={includeDisqualified} className="size-3.5 accent-brand-600" />
+            Show disqualified
+          </Link>
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
         {can(user, "leads:write") && <Button asChild size="sm"><Link href="/walk-ins/new"><Plus />Add lead</Link></Button>}
         <form method="get" className="flex flex-wrap items-center gap-2">
+          {includeDisqualified && <input type="hidden" name="disqualified" value="1" />}
           <input
             type="search"
             name="q"

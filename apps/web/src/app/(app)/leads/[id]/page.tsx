@@ -1,11 +1,14 @@
 import Link from "next/link";
 import { randomUUID } from "node:crypto";
 import { notFound } from "next/navigation";
-import { LEAD_STAGES, TERMINAL_STAGES } from "@monark/core";
+import { LEAD_STAGES } from "@monark/core";
 import { can, requirePermission } from "@/lib/auth";
 import { getLeadDetail, listActiveProjects, listAgents } from "@/lib/queries";
-import { assignLead, changeStage, checkInVisit, logActivity, updateLeadProject } from "@/lib/actions";
+import { assignLead, checkInVisit, logActivity, updateLeadProject } from "@/lib/actions";
 import { saveQualification } from "@/lib/qualification-actions";
+import { CollapsibleLogs } from "@/components/collapsible-logs";
+import { LeadActions } from "@/components/lead-actions";
+import { StageChangeForm } from "@/components/stage-change-form";
 import { LeadCommercialPanel } from "@/components/lead-commercial-panel";
 import { AttributionClock, Card, EmptyState, SourceBadge, StageBadge, SubmitButton } from "@/components/ui";
 import {
@@ -134,7 +137,8 @@ export default async function LeadDetailPage({ params }: { params: Promise<{ id:
             {lead.primary_email ? ` · ${lead.primary_email}` : ""} · {lead.reference}
           </p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-col items-end gap-2">
+          <div className="flex items-center gap-2">
           <StageBadge stage={lead.stage_text} />
           {lead.is_nri && (
             <span className="rounded-md bg-violet-100 px-2 py-0.5 text-xs text-violet-700 dark:bg-violet-950 dark:text-violet-300">
@@ -146,12 +150,21 @@ export default async function LeadDetailPage({ params }: { params: Promise<{ id:
               Do not contact
             </span>
           )}
+          </div>
+          {writable && (
+            <LeadActions
+              leadId={lead.id}
+              leadName={lead.full_name ?? lead.reference}
+              stage={lead.stage_text}
+              compact
+            />
+          )}
         </div>
       </div>
 
-      {/* The timeline is the narrative and can run to hundreds of events, so it
-          keeps the full width and stays out of the balanced flow below. */}
-      <Card title="Timeline" subtitle={`${timeline.length} events`}>
+      {/* Full width and outside the balanced flow below: the log is long, and
+          collapsed by default so it never buries the actionable cards. */}
+      <CollapsibleLogs count={timeline.length}>
             {timeline.length === 0 ? (
               <EmptyState title="Nothing logged yet" />
             ) : (
@@ -182,7 +195,7 @@ export default async function LeadDetailPage({ params }: { params: Promise<{ id:
                 ))}
               </ol>
             )}
-      </Card>
+      </CollapsibleLogs>
 
       {/*
         Everything below is a self-contained card of unpredictable height, so a
@@ -269,57 +282,11 @@ export default async function LeadDetailPage({ params }: { params: Promise<{ id:
             )}
           </Card>
 
-          {writable && <Card title="Move stage">
-            <form action={changeStage} className="space-y-3 p-5">
-              <input type="hidden" name="leadId" value={lead.id} />
-              <select
-                name="toStage"
-                defaultValue=""
-                required
-                className="w-full rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-950"
-              >
-                <option value="" disabled>
-                  Select stage…
-                </option>
-                {["new", "contacted", "qualified", "negotiating", ...TERMINAL_STAGES]
-                  .filter((s) => s !== lead.stage_text)
-                  .map((s) => (
-                    <option key={s} value={s}>
-                      {stageLabel(s)}
-                    </option>
-                  ))}
-              </select>
-              <select
-                name="reasonCode"
-                defaultValue=""
-                className="w-full rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-950"
-              >
-                <option value="">Closing reason (required for Lost / Disqualified)…</option>
-                <option value="not_interested">Not interested</option>
-                <option value="budget_mismatch">Budget mismatch</option>
-                <option value="location_mismatch">Location mismatch</option>
-                <option value="configuration_mismatch">Configuration mismatch</option>
-                <option value="possession_timeline_mismatch">Possession timeline mismatch</option>
-                <option value="postponed">Postponed</option>
-                <option value="no_response">No response</option>
-                <option value="bought_competitor">Bought from competitor</option>
-                <option value="invalid_contact">Invalid contact</option>
-                <option value="duplicate">Duplicate</option>
-                <option value="spam_or_bot">Spam or bot</option>
-                <option value="wrong_geography">Wrong geography</option>
-                <option value="agent_or_broker">Agent or broker</option>
-              </select>
-              <input
-                name="reason"
-                placeholder="Reason (required when moving backwards or closing)"
-                className="w-full rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-950"
-              />
-              <SubmitButton>Update stage</SubmitButton>
-              <p className="text-xs text-zinc-500">
-                Visits, token payments and bookings are advanced by their dedicated workflows so reporting stays auditable.
-              </p>
-            </form>
-          </Card>}
+          {writable && (
+            <Card title="Move stage">
+              <StageChangeForm leadId={lead.id} currentStage={lead.stage_text} />
+            </Card>
+          )}
 
           {writable && lead.project_id && <Card title="Check in a visit">
             <form action={checkInVisit} className="space-y-3 p-5">

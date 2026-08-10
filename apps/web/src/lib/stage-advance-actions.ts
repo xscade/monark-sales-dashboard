@@ -258,9 +258,11 @@ export async function recordBookingFromBoard(
   _previous: StageAdvanceState,
   formData: FormData,
 ): Promise<StageAdvanceState> {
-  // Before the booking, because createBookingAction ends in a redirect that
-  // throws — nothing after it would ever run.
-  await attachFollowUp(formData);
+  // Token payments still need a next step; a confirmed booking does not — the
+  // booking itself is the commitment. Skip before createBookingAction because
+  // that action redirects by throwing.
+  const confirming = formData.get("initialStatus") === "booked";
+  if (!confirming) await attachFollowUp(formData);
   try {
     await createBookingAction(formData);
   } catch (error) {

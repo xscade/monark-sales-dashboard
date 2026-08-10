@@ -198,6 +198,7 @@ export interface LeadFilters {
   ownerId?: string;
   search?: string;
   source?: string;
+  includeDisqualified?: boolean;
   limit?: number;
   offset?: number;
 }
@@ -208,6 +209,9 @@ export async function listLeads(orgId: string, filters: LeadFilters = {}) {
 
   const conditions = [sql`l.org_id = ${orgId}`, sql`l.is_test = false`];
   if (filters.stage) conditions.push(sql`l.stage = ${filters.stage}::lead_stage`);
+  // Disqualified leads stay out of the working list unless explicitly asked
+  // for — or unless the stage filter is literally asking for them.
+  else if (!filters.includeDisqualified) conditions.push(sql`l.stage <> 'disqualified'`);
   if (filters.ownerId) conditions.push(sql`l.owner_user_id = ${filters.ownerId}`);
   if (filters.source) conditions.push(sql`t.source = ${filters.source}::touchpoint_source`);
   if (filters.search) {
@@ -359,7 +363,15 @@ export async function getPipeline(orgId: string, ownerId?: string) {
            l.next_follow_up_at AS "nextFollowUpAt", l.created_at AS "createdAt",
            p.full_name AS "fullName", p.primary_phone AS "primaryPhone",
            u.name AS "ownerName", t.ad_platform AS "adPlatform",
-           t.attribution_expires_at AS "attributionExpiresAt"
+           t.attribution_expires_at AS "attributionExpiresAt",
+           -- Site visits already on the books, so the board can offer to book
+           -- "a 3rd site visit" rather than pretending each one is the first.
+           -- Cancelled ones are excluded: a visit that was called off is not
+           -- history, it is a visit that never existed.
+           (SELECT COUNT(*)::int FROM visits v
+             WHERE v.org_id = l.org_id AND v.lead_id = l.id
+               AND v.type = 'project_site' AND v.status <> 'cancelled'
+           ) AS "siteVisitCount"
     FROM leads l
     JOIN persons p ON p.id = l.person_id
     LEFT JOIN users u ON u.id = l.owner_user_id
@@ -368,7 +380,10 @@ export async function getPipeline(orgId: string, ownerId?: string) {
     ORDER BY l.score DESC, l.created_at DESC
     LIMIT 400
   `);
-  return result.rows as unknown as (LeadRow & { attributionExpiresAt: string | null })[];
+  return result.rows as unknown as (LeadRow & {
+    attributionExpiresAt: string | null;
+    siteVisitCount: number;
+  })[];
 }
 
 /** Walk-in lookup. Phone is the only identifier a receptionist reliably has. */

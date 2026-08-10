@@ -43,6 +43,7 @@ export default async function PipelinePage({
     ownerName: lead.ownerName,
     attributionExpiresAt: lead.attributionExpiresAt,
     nextFollowUpAt: lead.nextFollowUpAt,
+    siteVisitCount: lead.siteVisitCount,
   }));
 
   return (

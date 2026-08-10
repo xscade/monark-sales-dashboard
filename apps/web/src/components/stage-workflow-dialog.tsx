@@ -504,7 +504,7 @@ function BookingForm({
         </label>
       </div>
 
-      <NextFollowUp context={confirming ? "after confirming the booking" : "after the token payment"} offsetHours={48} />
+      {!confirming && <NextFollowUp context="after the token payment" offsetHours={48} />}
 
       <p className="mt-3 text-xs text-zinc-500">
         This creates the booking and takes you to it. The unit and the stage follow from that record.

@@ -234,6 +234,11 @@ export async function listLeads(orgId: string, filters: LeadFilters = {}) {
       l.id, l.reference, l.stage::text AS stage, l.score,
       l.created_at AS "createdAt", l.last_activity_at AS "lastActivityAt",
       l.next_follow_up_at AS "nextFollowUpAt", l.first_response_seconds AS "firstResponseSeconds",
+      -- Same person, more than one opportunity. A returning buyer legitimately
+      -- gets a fresh lead, and without this the list reads as a duplicate
+      -- customer rather than a repeat one.
+      (SELECT COUNT(*)::int FROM leads sib
+        WHERE sib.org_id = l.org_id AND sib.person_id = l.person_id) AS "personLeadCount",
       p.full_name AS "fullName", p.primary_phone AS "primaryPhone", p.city,
       u.name AS "ownerName",
       pr.name AS "projectName",
@@ -261,6 +266,9 @@ export interface LeadRow {
   ownerName: string | null; projectName: string | null;
   source: string | null; adPlatform: string | null; campaignName: string | null;
   attributionExpiresAt: string | null; totalCount: number;
+  /** How many opportunities this person holds in total. >1 means a returning
+   *  buyer, not a duplicated customer. */
+  personLeadCount: number;
 }
 
 /** Everything the lead detail page needs, in one round trip per section. */
@@ -300,12 +308,25 @@ export async function getLeadDetail(orgId: string, leadId: string) {
         LEFT JOIN users u ON u.id = h.changed_by_user_id
         WHERE h.lead_id = ${leadId} ORDER BY h.created_at ASC
       `),
+      // Merged across every opportunity this person holds.
+      //
+      // A buyer who books and comes back gets a second opportunity by design —
+      // the first journey's history has to stay intact — but the *person* is
+      // one person, and a log that stops at the opportunity boundary hides
+      // half of what the team knows about them.
       db().execute(sql`
         SELECT a.id, a.type, a.direction, a.subject, a.body, a.occurred_at,
-               a.call_duration_seconds, a.call_outcome, u.name AS user_name
+               a.call_duration_seconds, a.call_outcome, u.name AS user_name,
+               a.lead_id, ol.reference AS lead_reference
         FROM activities a
         LEFT JOIN users u ON u.id = a.user_id
-        WHERE a.lead_id = ${leadId} ORDER BY a.occurred_at DESC LIMIT 100
+        LEFT JOIN leads ol ON ol.id = a.lead_id AND ol.org_id = a.org_id
+        WHERE a.org_id = ${orgId}
+          AND (
+            a.lead_id = ${leadId}
+            OR a.person_id = (SELECT person_id FROM leads WHERE id = ${leadId} AND org_id = ${orgId})
+          )
+        ORDER BY a.occurred_at DESC LIMIT 100
       `),
       db().execute(sql`
         SELECT v.id, v.type::text AS type, v.status::text AS status, v.scheduled_at,
@@ -313,8 +334,16 @@ export async function getLeadDetail(orgId: string, leadId: string) {
                v.accompanying_relations, v.intent_rating, v.configurations_viewed,
                v.units_viewed, v.objections, v.next_action,
                v.notes, v.check_in_method, v.host_user_id, u.name AS host_name
-        FROM visits v LEFT JOIN users u ON u.id = v.host_user_id
-        WHERE v.lead_id = ${leadId} ORDER BY COALESCE(v.arrived_at, v.scheduled_at) DESC
+               , v.lead_id, ov.reference AS lead_reference
+        FROM visits v
+        LEFT JOIN users u ON u.id = v.host_user_id
+        LEFT JOIN leads ov ON ov.id = v.lead_id AND ov.org_id = v.org_id
+        WHERE v.org_id = ${orgId}
+          AND (
+            v.lead_id = ${leadId}
+            OR v.person_id = (SELECT person_id FROM leads WHERE id = ${leadId} AND org_id = ${orgId})
+          )
+        ORDER BY COALESCE(v.arrived_at, v.scheduled_at) DESC
       `),
       db().execute(sql`
         SELECT quality::text AS quality, budget_fit, location_fit, timeline_fit,

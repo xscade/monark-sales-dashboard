@@ -86,7 +86,12 @@ export default async function LeadDetailPage({ params }: { params: Promise<{ id:
       // it every follow-up task and note rendered as the bare word "task".
       title: a.subject ?? (a.type === "call" ? `Call — ${a.call_outcome ?? "logged"}` : a.type),
       detail: a.body,
-      meta: a.user_name,
+      // The log is merged across the person's opportunities, so anything from
+      // a different one says which — otherwise a booked deal's history looks
+      // like it happened on this enquiry.
+      meta: [a.user_name, a.lead_id !== lead.id ? `on ${a.lead_reference}` : null]
+        .filter(Boolean)
+        .join(" · ") || null,
     })),
     ...visits.map((v) => ({
       at: new Date(v.arrived_at ?? v.scheduled_at),
@@ -110,6 +115,7 @@ export default async function LeadDetailPage({ params }: { params: Promise<{ id:
         Array.isArray(v.accompanying_relations) && v.accompanying_relations.length
           ? v.accompanying_relations.join(", ") : null,
         v.intent_rating ? `intent ${v.intent_rating}/5` : null,
+        v.lead_id !== lead.id ? `on ${v.lead_reference}` : null,
       ]
         .filter(Boolean)
         .join(" · ") || null,

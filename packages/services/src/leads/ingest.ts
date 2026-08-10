@@ -35,6 +35,19 @@ export interface IngestLeadInput {
 
   source: string;
   sourceDetail?: string | null;
+  /**
+   * Reuse a completed sale rather than opening a second opportunity.
+   *
+   * Set by the surfaces where the person is physically present — a walk-in
+   * desk, a site check-in link. A buyer who has already booked and turns up on
+   * site is almost always there about the purchase they made, not shopping for
+   * another one, and forking a fresh `visited` lead for that counts a completed
+   * sale as a new lead in every funnel that reads this table.
+   *
+   * Left off for form and API ingestion: a booked customer filling in a website
+   * enquiry genuinely is asking about something new.
+   */
+  attachToBookedLead?: boolean;
 
   utm?: {
     source?: string | null;
@@ -411,9 +424,28 @@ export async function ingestLead(tx: Tx, input: IngestLeadInput): Promise<Ingest
       ),
     );
 
-  const matchingLead = input.projectId
+  let matchingLead = input.projectId
     ? openLeads.find((l) => l.projectId === input.projectId) ?? null
     : openLeads[0] ?? null;
+
+  // No open opportunity, but the person has already bought. `lost` and
+  // `disqualified` deliberately stay excluded — somebody who went cold and
+  // came back genuinely is a new opportunity.
+  if (!matchingLead && input.attachToBookedLead) {
+    const bookedLeads = await tx
+      .select({ id: leads.id, reference: leads.reference, projectId: leads.projectId })
+      .from(leads)
+      .where(
+        and(
+          eq(leads.orgId, input.orgId),
+          eq(leads.personId, personId),
+          sql`${leads.stage} = 'booked'`,
+        ),
+      );
+    matchingLead = input.projectId
+      ? bookedLeads.find((l) => l.projectId === input.projectId) ?? bookedLeads[0] ?? null
+      : bookedLeads[0] ?? null;
+  }
 
   let leadId: string;
   let leadReference: string;

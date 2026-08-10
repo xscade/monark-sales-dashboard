@@ -363,6 +363,9 @@ export async function submitPublicWalkIn(
         city: input.city,
         source: WALK_IN_LINK_SOURCE[link.linkType],
         sourceDetail: link.label,
+        // Somebody standing at the gate who already bought is here about that
+        // purchase, not starting a second one.
+        attachToBookedLead: true,
         notes: input.notes,
         consent: {
           marketing: input.consent,
@@ -447,7 +450,12 @@ export async function submitPublicWalkIn(
         });
       }
 
-      await emitConversionEvent(tx, {
+      // A buyer who already booked is not progressing through the funnel by
+      // walking in — they completed it. Reporting another mid-funnel visit for
+      // them teaches Meta and Google to optimise for people who have already
+      // bought, which is the opposite of what the spend is for.
+      if (lead.stage !== "booked") {
+        await emitConversionEvent(tx, {
         orgId: link.orgId,
         eventType: input.visitType === "project_site" ? "site_visit_completed" : "walk_in_completed",
         personId: result.personId,
@@ -464,7 +472,8 @@ export async function submitPublicWalkIn(
         attributionExpiresAt: result.isNewLead
           ? result.attributionExpiresAt
           : (lead.firstAttributionExpiresAt ?? result.attributionExpiresAt),
-      });
+        });
+      }
 
       // The visitor is told nothing — they filled a form and it worked. The
       // team, though, needs to know this was somebody already on the books:

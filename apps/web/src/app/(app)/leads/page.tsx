@@ -146,6 +146,14 @@ export default async function LeadsPage({
                       <p className="font-medium">{lead.fullName ?? "Unnamed"}</p>
                       <p className="tabular text-xs text-zinc-500">
                         {maskPhoneDisplay(lead.primaryPhone)} · {lead.reference}
+                        {lead.personLeadCount > 1 && (
+                          <span
+                            className="ml-1.5 rounded bg-violet-100 px-1.5 py-0.5 text-[10px] font-medium text-violet-700 dark:bg-violet-950 dark:text-violet-300"
+                            title="Same customer, a separate opportunity — their earlier one is closed"
+                          >
+                            repeat · {lead.personLeadCount} opportunities
+                          </span>
+                        )}
                       </p>
                     </Link>
                   </Td>

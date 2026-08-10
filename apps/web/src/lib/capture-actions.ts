@@ -349,6 +349,9 @@ export async function createFreshWalkIn(
         city: input.city,
         source: input.source,
         sourceDetail: input.sourceDetail || (input.recordVisit ? input.visitType : undefined),
+        // Only when they are actually here. An enquiry typed in from a phone
+        // call may well be a booked customer asking about a second unit.
+        attachToBookedLead: input.recordVisit,
         notes: input.notes,
         consent: {
           marketing: input.marketingConsent,

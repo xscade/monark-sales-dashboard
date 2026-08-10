@@ -100,44 +100,49 @@ errors.
 like `"// note"` fail schema validation outright, so the reasoning lives here
 instead.
 
-`vercel.json` is four lines because the build is done by
-`scripts/build-vercel.mjs`, which emits Vercel's **Build Output API v3**
-directly into `.vercel/output`. Routes, function config and static assets all
-live in that script, not in `vercel.json`.
+**One Vercel project serves everything.** The Next.js app in `apps/web` hosts
+the dashboard *and* the public API:
 
-**Why not Vercel's zero-config `/api` handling?** Because `@vercel/node` cannot
-deploy a pnpm workspace whose packages ship raw TypeScript. It transpiles each
-file in place and then traces imports, so a package with
-`"main": "./src/index.ts"` fails two different ways and there is no setting that
-resolves both:
+| Path | Served by |
+|---|---|
+| `/`, `/leads`, `/pipeline`, … | dashboard pages (session auth) |
+| `/v1/*` | the Hono app, mounted as a catch-all route handler (API-key auth) |
+| `/api/cron/outbox` | conversion outbox drain (cron bearer token) |
+| `/health` | liveness |
+
+There is no `vercel.json` and no build script — Next's defaults are correct.
+
+### Project settings
+
+| Setting | Value |
+|---|---|
+| Root Directory | `apps/web` |
+| Framework Preset | Next.js |
+| Build / Output Command | leave blank |
+
+### Why it is not two projects, or a standalone `/api` function
+
+Both were tried and both were worse.
+
+`@vercel/node` cannot deploy a pnpm workspace whose packages ship raw
+TypeScript. It transpiles each file in place and then traces imports, so a
+package with `"main": "./src/index.ts"` fails two ways, and no setting fixes
+both:
 
 | `main` points at | Failure |
 |---|---|
 | `./src/index.ts` | compiled to `.js`, but `main` still names the `.ts` → `Cannot find module .../index.ts` |
-| `./src/index.js` | that file does not exist when tracing runs → package never included → `Cannot find module '@monark/db'` |
+| `./src/index.js` | does not exist when tracing runs → package never included → `Cannot find module '@monark/db'` |
 
-The conventional fix is to compile every workspace package to `dist/` and
-repoint `main` — which works, but then local development can no longer run
-straight from source.
+Working around it needed an esbuild bundling step emitting Build Output API v3
+by hand — which then broke again on git deploys, because Vercel's zero-config
+builder scans `api/` independently of `buildCommand` and silently won.
 
-Bundling avoids both. esbuild resolves and compiles the TypeScript itself, so
-each function ships as one self-contained CommonJS file with no workspace
-imports left to resolve at runtime. Local dev keeps running from source via
-`tsx`, and cold starts get smaller.
+Next.js solves the whole class of problem with one line, `transpilePackages`.
 
-**The functions export a Node `(req, res)` listener, not a Web handler.**
-Vercel's Node launcher calls the default export with `(req, res)` and *ignores
-the return value*. Exporting `app.fetch` directly produces a function that
-builds a perfectly good `Response` which is then dropped, and the request hangs
-until the 30-second timeout. `@vercel/node` normally auto-wraps Web-style
-handlers; when you emit build output yourself, that wrapping is your job —
-hence `getRequestListener` in both entrypoints.
-
-To verify a change before deploying:
-
-```bash
-pnpm build:vercel
-```
+**The middleware must exempt `/v1/*` and `/api/*`.** They authenticate with
+bearer tokens, not browser sessions. Without the exemption a website posting a
+lead receives a 307 to `/login` and the enquiry is silently dropped.
 
 ### If every route returns 404
 

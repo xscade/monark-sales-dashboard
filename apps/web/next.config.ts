@@ -20,11 +20,26 @@ const config: NextConfig = {
    * `@vercel/node` has no equivalent and had to be worked around with an
    * esbuild bundling step. Here it is one line.
    */
-  transpilePackages: ["@monark/core", "@monark/db", "@monark/services"],
+  transpilePackages: ["@monark/core", "@monark/db", "@monark/services", "@monark/api"],
 
   serverExternalPackages: ["pg"],
 
   eslint: { ignoreDuringBuilds: true },
+
+  async headers() {
+    return [
+      {
+        // Ingestion responses carry lead identifiers — never cache them, and
+        // never let a referrer leak the URL.
+        source: "/v1/:path*",
+        headers: [
+          { key: "X-Content-Type-Options", value: "nosniff" },
+          { key: "Referrer-Policy", value: "no-referrer" },
+          { key: "Cache-Control", value: "no-store" },
+        ],
+      },
+    ];
+  },
 
   experimental: {
     // Server Actions handle every mutation in this app; the default 1MB body

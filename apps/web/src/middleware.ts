@@ -43,7 +43,22 @@ export async function middleware(request: NextRequest) {
   } = await supabase.auth.getUser();
 
   const path = request.nextUrl.pathname;
-  const isPublic = path.startsWith("/login") || path.startsWith("/auth");
+
+  /**
+   * Machine endpoints must never be redirected to a login page.
+   *
+   * `/v1/*` is the public ingestion API — it authenticates with a bearer API
+   * key, and a website posting a lead would otherwise receive a 307 to /login
+   * and silently drop the enquiry. `/api/cron/*` authenticates with the cron
+   * bearer token for the same reason.
+   *
+   * Both do their own authentication; what they must not inherit is the
+   * browser session check.
+   */
+  const isMachineEndpoint = path.startsWith("/v1") || path.startsWith("/api/");
+  const isPublic = path.startsWith("/login") || path.startsWith("/auth") || path === "/health";
+
+  if (isMachineEndpoint) return response;
 
   if (!user && !isPublic) {
     const url = request.nextUrl.clone();

@@ -4,9 +4,15 @@ import { useActionState, useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { AlertCircle, ArrowRight, Ban, CheckCircle2 } from "lucide-react";
-import { disqualifyLead, promoteLead, type LeadActionState } from "@/lib/actions";
+import {
+  disqualifyLead,
+  getLeadRefundContext,
+  promoteLead,
+  type LeadActionState,
+  type LeadRefundContext,
+} from "@/lib/actions";
 import { LOST_REASONS, isEditableStage, nextForwardStage } from "@/lib/stage-edit";
-import { stageLabel } from "@/lib/format";
+import { formatINR, stageLabel } from "@/lib/format";
 
 const initialState: LeadActionState = { ok: false };
 const field =
@@ -141,6 +147,18 @@ function DisqualifyDialog({
 }) {
   const router = useRouter();
   const [state, action, pending] = useActionState(disqualifyLead, initialState);
+  const [booking, setBooking] = useState<LeadRefundContext | null>(null);
+
+  // Only leads that actually took money get asked about a refund.
+  useEffect(() => {
+    let live = true;
+    getLeadRefundContext(leadId)
+      .then((result) => live && setBooking(result))
+      .catch(() => undefined);
+    return () => {
+      live = false;
+    };
+  }, [leadId]);
 
   useEffect(() => {
     if (state.ok) {
@@ -202,6 +220,22 @@ function DisqualifyDialog({
             className={field}
           />
         </label>
+
+        {booking && Number(booking.netCollected) > 0 && (
+          <label className="mt-3 flex items-start gap-2.5 rounded-lg border border-amber-300 bg-amber-50/60 p-3 dark:border-amber-900/60 dark:bg-amber-950/25">
+            <input type="checkbox" name="refundBooking" className="mt-0.5 size-4 accent-amber-600" />
+            <span>
+              <span className="block text-sm font-medium">
+                Refund {formatINR(booking.netCollected)} and cancel {booking.reference}
+              </span>
+              <span className="block text-xs text-zinc-500">
+                Optional. Records a refund against the booking rather than erasing the original
+                payment, frees the unit back to available, and removes the agreement value from
+                collections and reports.
+              </span>
+            </span>
+          </label>
+        )}
 
         <label className="mt-3 flex items-start gap-2.5 rounded-lg border border-zinc-200 p-3 dark:border-zinc-800">
           <input type="checkbox" name="doNotContact" className="mt-0.5 size-4 accent-red-600" />

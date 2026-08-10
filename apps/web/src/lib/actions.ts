@@ -366,6 +366,48 @@ export interface StageMoveResult {
   message?: string;
 }
 
+export interface LeadRefundContext {
+  bookingId: string;
+  reference: string;
+  status: string;
+  agreementValue: string | null;
+  /** Net of prior refunds, and what the refund tick would return. */
+  netCollected: string;
+}
+
+/**
+ * The money sitting against a lead, if any.
+ *
+ * Fetched when the disqualify dialog opens rather than shipped with every row:
+ * the refund option only exists for the handful of leads that ever took a
+ * payment, and asking about it up front would put a booking lookup behind
+ * every Disqualify button on the customer table.
+ */
+export async function getLeadRefundContext(
+  leadId: string,
+): Promise<LeadRefundContext | null> {
+  const user = await requirePermission("leads:write");
+  if (!z.string().uuid().safeParse(leadId).success) return null;
+
+  const result = await getDb().execute(sql`
+    SELECT b.id AS "bookingId", b.reference, b.status::text AS status,
+           b.agreement_value AS "agreementValue",
+           COALESCE((
+             SELECT SUM(CASE WHEN pm.kind = 'refund' THEN -pm.amount ELSE pm.amount END)
+             FROM payments pm
+             WHERE pm.booking_id = b.id AND pm.org_id = b.org_id AND pm.is_reversed = false
+           ), 0)::text AS "netCollected"
+    FROM bookings b
+    WHERE b.org_id = ${user.orgId} AND b.lead_id = ${leadId} AND b.status <> 'cancelled'
+    ORDER BY b.created_at DESC
+    LIMIT 1
+  `);
+  const booking = result.rows[0] as unknown as LeadRefundContext | undefined;
+  // Nothing to offer a refund on if no money ever arrived.
+  if (!booking || Number(booking.netCollected) <= 0) return booking ?? null;
+  return booking;
+}
+
 export interface LeadActionState {
   ok: boolean;
   message?: string;
@@ -384,6 +426,89 @@ export interface LeadActionState {
  * asks not to be contacted means it for every enquiry they have ever made, and
  * a per-lead flag would let the next enquiry call them anyway.
  */
+/**
+ * Reverses the money on a lead being closed out.
+ *
+ * A refund is recorded as a payment of kind `refund` rather than by editing the
+ * original figures: the collection actually happened, and erasing it would make
+ * the ledger disagree with the bank. Every aggregate in the app already
+ * subtracts refunds, so agreement value, net collected and outstanding all fall
+ * out of this one row.
+ *
+ * Returns the formatted amount refunded, or null when there was nothing to
+ * return.
+ */
+async function refundAndCancelBooking(
+  user: SessionUser,
+  leadId: string,
+  reason: string,
+): Promise<string | null> {
+  const db = getDb();
+  const found = await db.execute(sql`
+    SELECT b.id, b.reference, b.status::text AS status, b.unit_id AS "unitId",
+           COALESCE((
+             SELECT SUM(CASE WHEN pm.kind = 'refund' THEN -pm.amount ELSE pm.amount END)
+             FROM payments pm
+             WHERE pm.booking_id = b.id AND pm.org_id = b.org_id AND pm.is_reversed = false
+           ), 0)::text AS "netCollected"
+    FROM bookings b
+    WHERE b.org_id = ${user.orgId} AND b.lead_id = ${leadId} AND b.status <> 'cancelled'
+    ORDER BY b.created_at DESC
+    LIMIT 1
+  `);
+  const booking = found.rows[0] as
+    | { id: string; reference: string; status: string; unitId: string | null; netCollected: string }
+    | undefined;
+  if (!booking) return null;
+  if (booking.status === "registered") {
+    throw new Error("A registered sale cannot be refunded from here — cancel it in the booking register");
+  }
+
+  const amount = Number(booking.netCollected);
+  const now = new Date();
+
+  await db.transaction(async (tx) => {
+    if (amount > 0) {
+      await tx.execute(sql`
+        INSERT INTO payments (
+          id, org_id, booking_id, amount, kind, mode, reference, received_at, recorded_by_user_id
+        ) VALUES (
+          ${randomUUID()}, ${user.orgId}, ${booking.id}, ${amount.toFixed(2)}, 'refund',
+          null, ${`Refund on disqualification: ${reason}`}, ${now}, ${user.id}
+        )
+      `);
+    }
+    await tx.execute(sql`
+      UPDATE bookings
+      SET status = 'cancelled', cancelled_at = ${now},
+          cancellation_reason = ${`Disqualified: ${reason}`}, updated_at = ${now}
+      WHERE org_id = ${user.orgId} AND id = ${booking.id}
+    `);
+    // The flat goes back on the market the moment the sale is undone.
+    if (booking.unitId) {
+      await tx.execute(sql`
+        UPDATE units SET status = 'available', updated_at = ${now}
+        WHERE org_id = ${user.orgId} AND id = ${booking.unitId}
+      `);
+    }
+    await tx.insert(auditLogs).values({
+      id: randomUUID(),
+      orgId: user.orgId,
+      actorUserId: user.id,
+      action: "booking.refunded",
+      entityType: "booking",
+      entityId: booking.id,
+      before: { status: booking.status, netCollected: booking.netCollected },
+      after: { status: "cancelled", refunded: amount },
+    });
+  });
+
+  revalidatePath("/bookings");
+  revalidatePath("/inventory");
+  revalidatePath("/reports");
+  return amount > 0 ? `₹${amount.toLocaleString("en-IN")}` : null;
+}
+
 export async function disqualifyLead(
   _previous: LeadActionState,
   formData: FormData,
@@ -395,18 +520,27 @@ export async function disqualifyLead(
       reasonCode: z.enum(LOST_REASONS),
       reason: z.string().trim().min(3, "Add a short explanation").max(500),
       doNotContact: z.boolean(),
+      refundBooking: z.boolean(),
     })
     .safeParse({
       leadId: formData.get("leadId"),
       reasonCode: formData.get("reasonCode"),
       reason: formData.get("reason"),
       doNotContact: formData.get("doNotContact") === "on",
+      refundBooking: formData.get("refundBooking") === "on",
     });
   if (!parsed.success) {
     return { ok: false, message: parsed.error.issues[0]?.message ?? "Choose a reason" };
   }
 
+  let refunded: string | null = null;
   try {
+    // Money first. A lead cannot be closed out while a live booking still
+    // holds a unit and counts toward agreement value — the board would show a
+    // disqualified buyer owning an apartment.
+    if (parsed.data.refundBooking) {
+      refunded = await refundAndCancelBooking(user, parsed.data.leadId, parsed.data.reason);
+    }
     await applyStageChange(user, {
       leadId: parsed.data.leadId,
       toStage: "disqualified",
@@ -435,9 +569,13 @@ export async function disqualifyLead(
   revalidatePath("/pipeline");
   revalidatePath("/follow-ups");
   revalidatePath(`/leads/${parsed.data.leadId}`);
+  const notes = [
+    refunded ? `${refunded} refunded and the booking cancelled` : null,
+    parsed.data.doNotContact ? "marked do not contact" : null,
+  ].filter(Boolean);
   return {
     ok: true,
-    message: parsed.data.doNotContact ? "Disqualified and marked do not contact" : "Lead disqualified",
+    message: notes.length ? `Disqualified · ${notes.join(" · ")}` : "Lead disqualified",
   };
 }
 

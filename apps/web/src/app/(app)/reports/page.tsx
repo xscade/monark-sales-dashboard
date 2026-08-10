@@ -1,7 +1,8 @@
 import Link from "next/link";
 import { Card, DataTable, EmptyState, SourceBadge, StatTile, Td, Th } from "@/components/ui";
 import { requirePermission } from "@/lib/auth";
-import { getCommercialReports, listCommercialProjects } from "@/lib/commercial-queries";
+import { getCashMovement, getCommercialReports, listCommercialProjects } from "@/lib/commercial-queries";
+import { CashMovementChart } from "@/components/cash-movement-chart";
 import { getWalkInLinkPerformance } from "@/lib/walk-in-link-queries";
 import { WALK_IN_LINK_TYPE_LABELS } from "@/lib/walk-in-links";
 import { formatINR, formatNumber, formatPercent } from "@/lib/format";
@@ -20,11 +21,13 @@ export default async function ReportsPage({
   const params = await searchParams;
   const days = Math.max(1, Math.min(Number(params.days) || 90, 730));
   const projectId = params.project?.trim() || undefined;
-  const [projects, report, channels] = await Promise.all([
+  const [projects, report, channels, cashMovement] = await Promise.all([
     listCommercialProjects(user.orgId),
     getCommercialReports(user.orgId, { days, projectId }),
     getWalkInLinkPerformance(user.orgId),
+    getCashMovement(user.orgId, { days, projectId }),
   ]);
+  const refundedTotal = cashMovement.reduce((sum, point) => sum + point.refunded, 0);
 
   const funnelRows = [
     { label: "Leads created", value: report.funnel.leads },
@@ -259,6 +262,19 @@ export default async function ReportsPage({
             </tbody>
           </DataTable>
         )}
+      </Card>
+
+      <Card
+        title="Cash movement"
+        subtitle={
+          refundedTotal > 0
+            ? "Collections above the line, refunds below it. The net line dips through zero when a period gave back more than it took."
+            : "Collections across the period. Refunds would appear below the line — there have been none."
+        }
+      >
+        <div className="px-3 pb-4 pt-2 sm:px-5">
+          <CashMovementChart data={cashMovement} />
+        </div>
       </Card>
 
       <Card

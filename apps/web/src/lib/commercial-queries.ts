@@ -669,3 +669,57 @@ export async function getCommercialReports(
     creatives: creativeResult.rows as unknown as CommercialReports["creatives"],
   };
 }
+
+export interface CashMovementPoint {
+  label: string;
+  /** Money in, refunds excluded. */
+  collected: number;
+  /** Money out, kept positive here and mirrored below the axis by the chart. */
+  refunded: number;
+  /** collected − refunded, so the line crosses zero when a period gives back
+   *  more than it took. */
+  net: number;
+}
+
+/**
+ * Cash in and cash out, bucketed across the reporting period.
+ *
+ * Refunds are a first-class series rather than a number netted off silently:
+ * a month that collected ₹80L and refunded ₹50L is a very different month from
+ * one that collected ₹30L, and a single "net" figure makes those identical.
+ */
+export async function getCashMovement(
+  orgId: string,
+  filters: { days: number; projectId?: string } = { days: 90 },
+): Promise<CashMovementPoint[]> {
+  const days = Math.max(7, Math.min(filters.days, 730));
+  // Weekly resolution reads well up to a few months; beyond that the bars stop
+  // being distinguishable and monthly is the honest granularity.
+  const grain = days <= 120 ? "week" : "month";
+  const projectId = filters.projectId ?? null;
+
+  const result = await db().execute(sql`
+    WITH buckets AS (
+      SELECT generate_series(
+        date_trunc(${grain}, now() - ${days} * interval '1 day'),
+        date_trunc(${grain}, now()),
+        ('1 ' || ${grain})::interval
+      ) AS bucket
+    )
+    SELECT
+      to_char(b.bucket, ${grain === "week" ? sql`'DD Mon'` : sql`'Mon YY'`}) AS label,
+      COALESCE(SUM(pm.amount) FILTER (WHERE pm.kind <> 'refund'), 0)::float AS collected,
+      COALESCE(SUM(pm.amount) FILTER (WHERE pm.kind = 'refund'), 0)::float AS refunded,
+      COALESCE(SUM(CASE WHEN pm.kind = 'refund' THEN -pm.amount ELSE pm.amount END), 0)::float AS net
+    FROM buckets b
+    LEFT JOIN payments pm
+      ON date_trunc(${grain}, pm.received_at) = b.bucket
+     AND pm.org_id = ${orgId}
+     AND pm.is_reversed = false
+    LEFT JOIN bookings bk ON bk.id = pm.booking_id AND bk.org_id = pm.org_id
+    WHERE (${projectId}::uuid IS NULL OR bk.project_id = ${projectId}::uuid OR pm.id IS NULL)
+    GROUP BY b.bucket
+    ORDER BY b.bucket
+  `);
+  return result.rows as unknown as CashMovementPoint[];
+}

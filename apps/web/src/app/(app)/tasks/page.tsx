@@ -32,6 +32,7 @@ export default async function TasksPage({
     owner?: string;
     status?: string;
     q?: string;
+    lead?: string;
     notice?: string;
     error?: string;
   }>;
@@ -65,6 +66,11 @@ export default async function TasksPage({
   };
   const returnTo = buildHref({});
   const mayWrite = can(user, "tasks:write");
+  // Only honour the hint if the lead is genuinely in this user's assignable
+  // set; a stale or borrowed URL must not preselect somebody else's lead.
+  const preselectedLead = targets.some((target) => target.id === params.lead)
+    ? (params.lead as string)
+    : "";
   const defaultAssignee = ownerId ?? user.id;
 
   return (
@@ -150,7 +156,10 @@ export default async function TasksPage({
                 <select
                   name="leadId"
                   required
-                  defaultValue=""
+                  // Preselected when arriving from a follow-up that has no next
+                  // step, so the person is not asked to find the lead they just
+                  // clicked on in a list of two hundred.
+                  defaultValue={preselectedLead}
                   className="w-full rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-950"
                 >
                   <option value="" disabled>

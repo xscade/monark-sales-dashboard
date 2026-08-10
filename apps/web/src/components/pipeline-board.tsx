@@ -5,10 +5,15 @@ import { useCallback, useEffect, useMemo, useOptimistic, useRef, useState, useTr
 import { createPortal } from "react-dom";
 import { GripVertical } from "lucide-react";
 import { toast } from "sonner";
-import { checkTransition, type LeadStage } from "@monark/core/pipeline";
+import { STAGE_ORDER, checkTransition, stageRank, type LeadStage } from "@monark/core/pipeline";
 import { AttributionClock } from "@/components/ui";
 import { moveLeadStage } from "@/lib/actions";
 import { formatRelative, maskPhoneDisplay, stageLabel } from "@/lib/format";
+import {
+  FOLLOW_UP_CHANNELS,
+  FOLLOW_UP_CHANNEL_LABELS,
+  type FollowUpChannel,
+} from "@/lib/follow-ups";
 import { WORKFLOW_STAGE_HINT, isEditableStage } from "@/lib/stage-edit";
 
 export interface PipelineCard {
@@ -55,6 +60,27 @@ interface DragState {
 
 type TargetState = "idle" | "ok" | "blocked";
 
+/**
+ * Past Contacted, a stage change without a next step is how deals go quiet.
+ *
+ * Up to Contacted the lead is still being triaged and the next action is
+ * obvious ("call them"). Beyond it every move represents a real conversation
+ * that ended with something agreed, and that agreement is the single most
+ * useful thing the CRM can capture — so the board asks for it at the moment it
+ * is still fresh, rather than hoping somebody types it in later.
+ */
+function needsFollowUp(toStage: string): boolean {
+  return stageRank(toStage as LeadStage) > STAGE_ORDER.contacted;
+}
+
+export interface StageMoveDetails {
+  reason?: string;
+  followUpAt?: string;
+  followUpChannel?: FollowUpChannel;
+  followUpNote?: string;
+  followUpCommitment?: string;
+}
+
 function targetState(stage: string, card: PipelineCard | null): TargetState {
   if (!card || stage === card.stage) return "idle";
   if (!isEditableStage(stage)) return "blocked";
@@ -78,7 +104,7 @@ export function PipelineBoard({
   const [movingId, setMovingId] = useState<string | null>(null);
   const [drag, setDragState] = useState<DragState | null>(null);
   const [keyboardMove, setKeyboardMove] = useState<{ card: PipelineCard; target: string } | null>(null);
-  const [reasonPrompt, setReasonPrompt] = useState<{ card: PipelineCard; toStage: string } | null>(null);
+  const [prompt, setPrompt] = useState<{ card: PipelineCard; toStage: string } | null>(null);
   const [mounted, setMounted] = useState(false);
 
   const boardRef = useRef<HTMLDivElement | null>(null);
@@ -108,18 +134,21 @@ export function PipelineBoard({
   }, []);
 
   const commitMove = useCallback(
-    (card: PipelineCard, toStage: string, reason: string | null) => {
+    (card: PipelineCard, toStage: string, details: StageMoveDetails) => {
       setMovingId(card.id);
       startTransition(async () => {
         applyMove({ id: card.id, toStage });
-        const result = await moveLeadStage({
-          leadId: card.id,
-          toStage,
-          reason: reason ?? undefined,
-        });
+        const result = await moveLeadStage({ leadId: card.id, toStage, ...details });
         setMovingId(null);
-        if (result.ok) toast.success(`${card.name} moved to ${stageLabel(toStage)}`);
-        else toast.error(result.message ?? "Could not move the lead");
+        if (result.ok) {
+          toast.success(
+            details.followUpAt
+              ? `${card.name} moved to ${stageLabel(toStage)} · follow-up set`
+              : `${card.name} moved to ${stageLabel(toStage)}`,
+          );
+        } else {
+          toast.error(result.message ?? "Could not move the lead");
+        }
       });
     },
     [applyMove],
@@ -145,11 +174,14 @@ export function PipelineBoard({
         toast.error(check.reason ?? "That move is not allowed");
         return;
       }
-      if (check.requiresReason) {
-        setReasonPrompt({ card, toStage });
+      // One dialog for both questions. A backwards move into a late stage needs
+      // a reason AND a next step, and asking twice in sequence is how people
+      // learn to dismiss dialogs without reading them.
+      if (check.requiresReason || needsFollowUp(toStage)) {
+        setPrompt({ card, toStage });
         return;
       }
-      commitMove(card, toStage, null);
+      commitMove(card, toStage, {});
     },
     [commitMove],
   );
@@ -516,14 +548,14 @@ export function PipelineBoard({
           document.body,
         )}
 
-      {reasonPrompt && (
-        <ReasonDialog
-          card={reasonPrompt.card}
-          toStage={reasonPrompt.toStage}
-          onCancel={() => setReasonPrompt(null)}
-          onConfirm={(reason) => {
-            setReasonPrompt(null);
-            commitMove(reasonPrompt.card, reasonPrompt.toStage, reason);
+      {prompt && (
+        <StageMoveDialog
+          card={prompt.card}
+          toStage={prompt.toStage}
+          onCancel={() => setPrompt(null)}
+          onConfirm={(details) => {
+            setPrompt(null);
+            commitMove(prompt.card, prompt.toStage, details);
           }}
         />
       )}
@@ -531,13 +563,28 @@ export function PipelineBoard({
   );
 }
 
+const fieldClass =
+  "w-full rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm outline-none focus:border-brand-500 dark:border-zinc-700 dark:bg-zinc-950";
+
+/** Default the follow-up to tomorrow morning rather than to an empty box. */
+function defaultFollowUpAt(): string {
+  const at = new Date();
+  at.setDate(at.getDate() + 1);
+  at.setHours(10, 0, 0, 0);
+  const pad = (value: number) => String(value).padStart(2, "0");
+  return `${at.getFullYear()}-${pad(at.getMonth() + 1)}-${pad(at.getDate())}T${pad(at.getHours())}:${pad(at.getMinutes())}`;
+}
+
 /**
- * A backwards move is allowed but never silent.
+ * Everything a stage move needs to explain itself.
  *
- * Frequent regressions are either a process problem or stage misuse, and the
- * difference is only readable from the reason attached at the time.
+ * Backwards moves need a reason — frequent regressions are either a process
+ * problem or stage misuse, and the difference is only readable from the reason
+ * attached at the time. Moves past Contacted need a next step, because a
+ * late-stage lead with no scheduled contact is the exact shape of a deal about
+ * to be lost quietly.
  */
-function ReasonDialog({
+function StageMoveDialog({
   card,
   toStage,
   onCancel,
@@ -546,13 +593,20 @@ function ReasonDialog({
   card: PipelineCard;
   toStage: string;
   onCancel: () => void;
-  onConfirm: (reason: string) => void;
+  onConfirm: (details: StageMoveDetails) => void;
 }) {
+  const regression = checkTransition(card.stage as LeadStage, toStage as LeadStage).requiresReason;
+  const followUp = needsFollowUp(toStage);
+
   const [reason, setReason] = useState("");
-  const inputRef = useRef<HTMLInputElement | null>(null);
+  const [at, setAt] = useState(defaultFollowUpAt);
+  const [channel, setChannel] = useState<FollowUpChannel>("call");
+  const [note, setNote] = useState("");
+  const [commitment, setCommitment] = useState("");
+  const firstFieldRef = useRef<HTMLInputElement | HTMLSelectElement | null>(null);
 
   useEffect(() => {
-    inputRef.current?.focus();
+    firstFieldRef.current?.focus();
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") onCancel();
     };
@@ -560,11 +614,13 @@ function ReasonDialog({
     return () => document.removeEventListener("keydown", onKeyDown);
   }, [onCancel]);
 
+  const ready = (!regression || reason.trim().length > 0) && (!followUp || at.length > 0);
+
   return (
     <div
       role="dialog"
       aria-modal="true"
-      aria-labelledby="stage-reason-title"
+      aria-labelledby="stage-move-title"
       className="fixed inset-0 z-[70] flex items-center justify-center bg-black/40 p-4"
       onClick={(event) => {
         if (event.target === event.currentTarget) onCancel();
@@ -573,27 +629,107 @@ function ReasonDialog({
       <form
         onSubmit={(event) => {
           event.preventDefault();
-          const trimmed = reason.trim();
-          if (trimmed) onConfirm(trimmed);
+          if (!ready) return;
+          onConfirm({
+            reason: regression ? reason.trim() : undefined,
+            followUpAt: followUp ? at : undefined,
+            followUpChannel: followUp ? channel : undefined,
+            followUpNote: followUp && note.trim() ? note.trim() : undefined,
+            followUpCommitment: followUp && commitment.trim() ? commitment.trim() : undefined,
+          });
         }}
-        className="w-full max-w-sm rounded-xl border border-zinc-200 bg-white p-5 shadow-xl dark:border-zinc-800 dark:bg-zinc-900"
+        className="max-h-[90vh] w-full max-w-md overflow-y-auto rounded-xl border border-zinc-200 bg-white p-5 shadow-xl dark:border-zinc-800 dark:bg-zinc-900"
       >
-        <h2 id="stage-reason-title" className="text-sm font-semibold">
-          Moving {card.name} back to {stageLabel(toStage)}
+        <h2 id="stage-move-title" className="text-sm font-semibold">
+          {regression ? "Moving" : "Move"} {card.name} to {stageLabel(toStage)}
         </h2>
-        <p className="mt-1 text-xs text-zinc-500">
-          Backwards moves need a reason — it is what makes the regression readable in the funnel
-          later.
-        </p>
-        <input
-          ref={inputRef}
-          value={reason}
-          onChange={(event) => setReason(event.target.value)}
-          maxLength={500}
-          placeholder="Why is this lead moving back?"
-          className="mt-3 w-full rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-950"
-        />
-        <div className="mt-4 flex justify-end gap-2">
+
+        {regression && (
+          <div className="mt-3">
+            <label className="block text-xs font-medium text-zinc-500" htmlFor="stage-move-reason">
+              Why is this lead moving back? *
+            </label>
+            <input
+              id="stage-move-reason"
+              ref={firstFieldRef as React.RefObject<HTMLInputElement>}
+              value={reason}
+              onChange={(event) => setReason(event.target.value)}
+              maxLength={500}
+              placeholder="Budget fell through, family postponed…"
+              className={`mt-1 ${fieldClass}`}
+            />
+            <p className="mt-1 text-xs text-zinc-500">
+              This is what makes the regression readable in the funnel later.
+            </p>
+          </div>
+        )}
+
+        {followUp && (
+          <div className={regression ? "mt-5 border-t border-zinc-200 pt-4 dark:border-zinc-800" : "mt-3"}>
+            <p className="text-xs font-semibold uppercase tracking-wide text-zinc-500">
+              Next follow-up
+            </p>
+            <p className="mt-1 text-xs text-zinc-500">
+              Past Contacted, every move came out of a real conversation. Capture what was agreed
+              while it is still fresh.
+            </p>
+
+            <div className="mt-3 grid gap-3 sm:grid-cols-2">
+              <label className="block">
+                <span className="mb-1 block text-xs font-medium text-zinc-500">When *</span>
+                <input
+                  type="datetime-local"
+                  required
+                  ref={regression ? undefined : (firstFieldRef as React.RefObject<HTMLInputElement>)}
+                  value={at}
+                  onChange={(event) => setAt(event.target.value)}
+                  className={fieldClass}
+                />
+              </label>
+              <label className="block">
+                <span className="mb-1 block text-xs font-medium text-zinc-500">How</span>
+                <select
+                  value={channel}
+                  onChange={(event) => setChannel(event.target.value as FollowUpChannel)}
+                  className={fieldClass}
+                >
+                  {FOLLOW_UP_CHANNELS.map((option) => (
+                    <option key={option} value={option}>{FOLLOW_UP_CHANNEL_LABELS[option]}</option>
+                  ))}
+                </select>
+              </label>
+            </div>
+
+            <label className="mt-3 block">
+              <span className="mb-1 block text-xs font-medium text-zinc-500">
+                What did they commit to?
+              </span>
+              <input
+                value={commitment}
+                onChange={(event) => setCommitment(event.target.value)}
+                maxLength={300}
+                placeholder="Will confirm after speaking to spouse"
+                className={fieldClass}
+              />
+            </label>
+
+            <label className="mt-3 block">
+              <span className="mb-1 block text-xs font-medium text-zinc-500">
+                Notes from this conversation
+              </span>
+              <textarea
+                value={note}
+                onChange={(event) => setNote(event.target.value)}
+                rows={3}
+                maxLength={2000}
+                placeholder="Budget, objections, who else is deciding…"
+                className={fieldClass}
+              />
+            </label>
+          </div>
+        )}
+
+        <div className="mt-5 flex justify-end gap-2">
           <button
             type="button"
             onClick={onCancel}
@@ -603,7 +739,7 @@ function ReasonDialog({
           </button>
           <button
             type="submit"
-            disabled={!reason.trim()}
+            disabled={!ready}
             className="rounded-lg bg-brand-600 px-3 py-2 text-sm font-medium text-white transition hover:bg-brand-700 disabled:opacity-50"
           >
             Move lead

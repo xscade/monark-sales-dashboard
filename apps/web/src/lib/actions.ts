@@ -16,6 +16,8 @@ import { revalidatePath } from "next/cache";
 import { z } from "zod";
 import { requirePermission, type SessionUser } from "./auth";
 import { localDateTimeSchema, parseLocalDateTime } from "./datetime";
+import { syncLeadNextFollowUp } from "./follow-up-sync";
+import { FOLLOW_UP_CHANNELS, FOLLOW_UP_CHANNEL_LABELS, type FollowUpChannel } from "./follow-ups";
 import { lockLeadForUpdate } from "./lead-lock";
 import { EDITABLE_STAGES, LOST_REASONS, type EditableStage, type LostReason } from "./stage-edit";
 
@@ -135,9 +137,22 @@ async function modelledValue(
  * Two copies of that would drift, and the drift would be invisible until the
  * funnel numbers stopped adding up.
  */
+interface FollowUpInput {
+  at: Date;
+  channel: FollowUpChannel;
+  note: string | null;
+  commitment: string | null;
+}
+
 async function applyStageChange(
   user: SessionUser,
-  input: { leadId: string; toStage: EditableStage; reason: string | null; reasonCode?: LostReason },
+  input: {
+    leadId: string;
+    toStage: EditableStage;
+    reason: string | null;
+    reasonCode?: LostReason;
+    followUp?: FollowUpInput;
+  },
 ) {
   const { leadId, toStage, reasonCode } = input;
   const reason = input.reason || null;
@@ -220,11 +235,39 @@ async function applyStageChange(
         sourceEntityId: leadId,
       });
     }
+
+    // The follow-up is a task, not a column on the lead. Writing it any other
+    // way would give the follow-up list and the task list two different
+    // answers to "what happens next with this buyer".
+    if (input.followUp) {
+      const { at, channel, note, commitment } = input.followUp;
+      const body = [note, commitment && `Committed: ${commitment}`]
+        .filter(Boolean)
+        .join("\n") || null;
+      await tx.insert(activities).values({
+        id: randomUUID(),
+        orgId: user.orgId,
+        leadId,
+        personId: lead.personId,
+        type: "task",
+        subject: `${FOLLOW_UP_CHANNEL_LABELS[channel]} after moving to ${toStage.replace(/_/g, " ")}`,
+        body,
+        dueAt: at,
+        // Whoever owns the lead does the work, falling back to the person who
+        // moved the card when the lead is still unassigned.
+        userId: lead.ownerUserId ?? user.id,
+        metadata: { channel, source: "pipeline_stage_change", stage: toStage },
+        occurredAt: now,
+      });
+      await syncLeadNextFollowUp(tx, user.orgId, leadId);
+    }
   });
 
   revalidatePath(`/leads/${leadId}`);
   revalidatePath("/pipeline");
   revalidatePath("/leads");
+  revalidatePath("/follow-ups");
+  revalidatePath("/tasks");
 }
 
 export async function changeStage(formData: FormData) {
@@ -257,11 +300,28 @@ export interface StageMoveResult {
  * the column it came from and say why, rather than replacing the whole screen
  * with an error boundary mid-drag.
  */
+const boardFollowUpSchema = z.object({
+  followUpAt: localDateTimeSchema,
+  followUpChannel: z.enum(FOLLOW_UP_CHANNELS),
+  followUpNote: z.preprocess(
+    (value) => String(value ?? "").trim() || undefined,
+    z.string().max(2000).optional(),
+  ),
+  followUpCommitment: z.preprocess(
+    (value) => String(value ?? "").trim() || undefined,
+    z.string().max(300).optional(),
+  ),
+});
+
 export async function moveLeadStage(input: {
   leadId: string;
   toStage: string;
   reason?: string;
   reasonCode?: string;
+  followUpAt?: string;
+  followUpChannel?: string;
+  followUpNote?: string;
+  followUpCommitment?: string;
 }): Promise<StageMoveResult> {
   const user = await requirePermission("leads:write");
   const parsed = stageChangeSchema.safeParse({
@@ -274,12 +334,39 @@ export async function moveLeadStage(input: {
     return { ok: false, message: "That stage cannot be set from the board" };
   }
 
+  let followUp: FollowUpInput | undefined;
+  if (input.followUpAt) {
+    const parsedFollowUp = boardFollowUpSchema.safeParse({
+      followUpAt: input.followUpAt,
+      followUpChannel: input.followUpChannel,
+      followUpNote: input.followUpNote,
+      followUpCommitment: input.followUpCommitment,
+    });
+    if (!parsedFollowUp.success) {
+      return { ok: false, message: parsedFollowUp.error.issues[0]?.message ?? "Check the follow-up details" };
+    }
+    const at = parseLocalDateTime(parsedFollowUp.data.followUpAt, user.timezone);
+    if (!at) return { ok: false, message: "Choose a valid follow-up time" };
+    // A follow-up already in the past is born overdue, which is almost always a
+    // mis-typed date rather than an intention.
+    if (at.getTime() < Date.now() - 60_000) {
+      return { ok: false, message: "Choose a follow-up time in the future" };
+    }
+    followUp = {
+      at,
+      channel: parsedFollowUp.data.followUpChannel,
+      note: parsedFollowUp.data.followUpNote ?? null,
+      commitment: parsedFollowUp.data.followUpCommitment ?? null,
+    };
+  }
+
   try {
     await applyStageChange(user, {
       leadId: parsed.data.leadId,
       toStage: parsed.data.toStage,
       reason: parsed.data.reason ?? null,
       reasonCode: parsed.data.reasonCode,
+      followUp,
     });
   } catch (error) {
     return { ok: false, message: error instanceof Error ? error.message : "Could not move the lead" };

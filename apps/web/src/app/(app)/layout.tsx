@@ -27,6 +27,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
         { href: "/leads", label: "Leads", show: can(user, "leads:read") },
         { href: "/pipeline", label: "Pipeline", show: can(user, "leads:read") },
         { href: "/customers", label: "Customers", show: can(user, "customers:read") },
+        { href: "/follow-ups", label: "Follow-ups", show: can(user, "tasks:read") },
         { href: "/tasks", label: "Tasks", show: can(user, "tasks:read") },
       ],
     },

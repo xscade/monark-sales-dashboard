@@ -121,7 +121,10 @@ export default async function OverviewPage() {
       <section className="grid grid-cols-2 gap-3 xl:grid-cols-4">
         <Metric label="Leads today" value={formatNumber(stats.leadsToday ?? 0)} detail="New opportunities captured" icon={ContactRound} />
         <Metric label="Unworked" value={formatNumber(stats.unworked ?? 0)} detail="Still waiting for first action" href="/leads?stage=new" icon={Clock3} tone={(stats.unworked ?? 0) > 0 ? "warn" : "good"} />
-        <Metric label="Overdue follow-ups" value={formatNumber(stats.overdue ?? 0)} detail="Due before the current time" href="/today" icon={ShieldAlert} tone={(stats.overdue ?? 0) > 0 ? "danger" : "good"} />
+        {/* `from=overview` is what makes the follow-ups page lead with the
+            overdue toggle — the visitor arrived having already asked that
+            question, and the answer should not be three clicks away. */}
+        <Metric label="Overdue follow-ups" value={formatNumber(stats.overdue ?? 0)} detail="Due before the current time" href="/follow-ups?from=overview" icon={ShieldAlert} tone={(stats.overdue ?? 0) > 0 ? "danger" : "good"} />
         <Metric label="Bookings · 30d" value={formatNumber(stats.bookings30d ?? 0)} detail="Confirmed commercial outcomes" href="/bookings" icon={IndianRupee} tone="good" />
       </section>
 

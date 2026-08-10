@@ -6,6 +6,7 @@ import { useMemo, useState } from "react";
 import { motion } from "motion/react";
 import {
   Activity,
+  AlarmClock,
   BarChart3,
   BookOpenCheck,
   Boxes,
@@ -71,6 +72,7 @@ const ICONS: Record<string, LucideIcon> = {
   "/leads": ContactRound,
   "/pipeline": PanelsTopLeft,
   "/customers": UsersRound,
+  "/follow-ups": AlarmClock,
   "/tasks": ListTodo,
   "/walk-ins": CircleUserRound,
   "/site-visits": Building2,

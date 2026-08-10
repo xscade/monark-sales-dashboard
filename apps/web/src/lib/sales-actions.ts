@@ -6,8 +6,7 @@ import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { z } from "zod";
 import { requirePermission, type SessionUser } from "./auth";
-
-type DbTx = Parameters<Parameters<ReturnType<typeof getDb>["transaction"]>[0]>[0];
+import { syncLeadNextFollowUp } from "./follow-up-sync";
 
 const TEAM_ROLES = new Set(["owner", "admin", "sales_manager"]);
 
@@ -58,6 +57,7 @@ function safeReturnTo(raw: string, fallback = "/tasks"): string {
     const allowed =
       url.pathname === "/tasks" ||
       url.pathname === "/today" ||
+      url.pathname === "/follow-ups" ||
       url.pathname.startsWith("/leads/") ||
       url.pathname.startsWith("/customers/");
     return allowed ? `${url.pathname}${url.search}` : fallback;
@@ -73,26 +73,10 @@ function withFlash(path: string, key: "notice" | "error", message: string): stri
   return `${url.pathname}${url.search}`;
 }
 
-async function syncLeadNextFollowUp(tx: DbTx, orgId: string, leadId: string): Promise<void> {
-  await tx.execute(sql`
-    UPDATE leads
-    SET next_follow_up_at = (
-          SELECT MIN(a.due_at)
-          FROM activities a
-          WHERE a.org_id = ${orgId}
-            AND a.lead_id = ${leadId}
-            AND a.type = 'task'
-            AND a.completed_at IS NULL
-            AND a.due_at IS NOT NULL
-        ),
-        updated_at = now()
-    WHERE org_id = ${orgId} AND id = ${leadId}
-  `);
-}
-
 function revalidateTaskSurfaces(leadId?: string | null, personId?: string | null): void {
   revalidatePath("/tasks");
   revalidatePath("/today");
+  revalidatePath("/follow-ups");
   if (leadId) revalidatePath(`/leads/${leadId}`);
   if (personId) revalidatePath(`/customers/${personId}`);
 }

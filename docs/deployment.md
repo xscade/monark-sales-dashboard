@@ -102,13 +102,15 @@ instead.
 
 - **`framework: null`** — explicit rather than omitted, so Vercel never
   misdetects a framework from something in the workspace.
-- **`buildCommand`** is a deliberate no-op. `@vercel/node` compiles `api/*.ts`
-  itself; there is nothing else to build. Leaving it unset makes Vercel run the
-  root `build` script instead, and a recursive workspace build that produces no
-  output is an easy way to fail a deploy for no reason.
-- **`outputDirectory: "public"`** — the directory must exist or the deploy fails
-  with *"No Output Directory found"*. It holds a small static status page, which
-  doubles as the first rung of the diagnostic ladder below.
+- **No `buildCommand`, and no `build` script in the root `package.json`.**
+  `@vercel/node` compiles `api/*.ts` itself; there is nothing else to build.
+  This is deliberate rather than an omission: if a `build` script exists, Vercel
+  runs it and then *requires* an output directory afterwards — which is how you
+  get `No Output Directory named "public" found after the Build completed` from
+  a repo that has no build output to produce.
+- **No `outputDirectory` either.** With no framework and no build, Vercel serves
+  `public/` automatically when it exists. Setting it explicitly only adds a way
+  to fail; auto-detection degrades gracefully.
 - **No rewrite for `/api/*`** — filesystem routing already serves those
   functions directly. An identity rewrite there is at best a no-op and at worst
   a loop.
@@ -129,8 +131,16 @@ deployed. Work down this ladder:
 | `/` also 404s | The deploy is not landing at all. Check **Root Directory** first. |
 
 **Root Directory must be blank** (Settings → General). The deployment surface —
-`api/` and `vercel.json` — lives at the repository root. Pointing Root Directory
-at `apps/api` means Vercel never sees either file, and every route 404s.
+`api/`, `public/` and `vercel.json` — lives at the repository root. Pointing
+Root Directory at `apps/api` means Vercel never sees any of them, and every
+route 404s.
+
+A useful property of the failure mode: `public` is *also* Vercel's default
+output directory name, so an error mentioning it does **not** prove
+`vercel.json` was read. If you need to know for certain whether Vercel is
+reading the file, temporarily set `outputDirectory` to a distinctive value and
+redeploy — if the error still says `"public"`, the file is being ignored and
+Root Directory is wrong.
 
 ### Deployment Protection must be off for Production
 

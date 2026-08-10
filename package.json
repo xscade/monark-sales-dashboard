@@ -15,7 +15,6 @@
     "db:check": "pnpm --filter @monark/db check",
     "dev": "pnpm --filter @monark/api dev",
     "worker": "pnpm --filter @monark/worker dev",
-    "build": "pnpm -r build",
     "typecheck": "pnpm -r typecheck && tsc --noEmit -p tsconfig.json",
     "test": "pnpm -r test"
   },

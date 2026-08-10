@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="robots" content="noindex, nofollow" />
+    <title>Monark Sales Intelligence — API</title>
+    <style>
+      :root { color-scheme: light dark; }
+      body {
+        font: 15px/1.6 ui-sans-serif, -apple-system, "Segoe UI", system-ui, sans-serif;
+        max-width: 42rem; margin: 0 auto; padding: 3rem 1.25rem;
+        color: #18181b; background: #fff;
+      }
+      @media (prefers-color-scheme: dark) {
+        body { color: #e4e4e7; background: #09090b; }
+        code, .box { background: #18181b !important; border-color: #27272a !important; }
+        a { color: #7dd3fc; }
+      }
+      h1 { font-size: 1.25rem; margin: 0 0 .25rem; }
+      p.sub { margin: 0 0 2rem; opacity: .65; }
+      .box { border: 1px solid #e4e4e7; border-radius: .5rem; padding: 1rem 1.25rem; background: #fafafa; }
+      code { background: #f4f4f5; padding: .1rem .35rem; border-radius: .25rem; font-size: .875em; }
+      table { border-collapse: collapse; width: 100%; margin: 0; }
+      td { padding: .4rem 0; vertical-align: top; }
+      td:first-child { width: 11rem; white-space: nowrap; }
+      .note { font-size: .875rem; opacity: .7; margin-top: 2rem; }
+    </style>
+  </head>
+  <body>
+    <h1>Monark Sales Intelligence — API</h1>
+    <p class="sub">Lead ingestion and offline conversion delivery. No UI here.</p>
+
+    <div class="box">
+      <table>
+        <tr>
+          <td><code>GET /health</code></td>
+          <td><a href="/health">liveness check</a></td>
+        </tr>
+        <tr>
+          <td><code>POST /v1/leads</code></td>
+          <td>lead ingestion — bearer token required</td>
+        </tr>
+        <tr>
+          <td><code>GET /api/cron/outbox</code></td>
+          <td>conversion outbox drain — scheduler only</td>
+        </tr>
+      </table>
+    </div>
+
+    <p class="note">
+      This page is a static file. If you can read it but <code>/health</code>
+      returns 404, the static deploy succeeded and the serverless functions did
+      not — check the build log for <code>api/index.ts</code>.
+    </p>
+  </body>
+</html>

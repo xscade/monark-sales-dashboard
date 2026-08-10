@@ -1,21 +1,25 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
+
   "installCommand": "pnpm install --frozen-lockfile",
-  "framework": null,
+
+  "// buildCommand": "There is no build step — @vercel/node compiles api/*.ts itself. An explicit no-op is used rather than leaving this blank, because the default would run the root `build` script, and a recursive workspace build that produces no output is an easy way to fail a deploy for no reason.",
+  "buildCommand": "echo 'no build step: api/*.ts is compiled by @vercel/node'",
+
+  "// outputDirectory": "Must exist or Vercel fails with 'No Output Directory found'. public/ holds a small status page so / is meaningful instead of a bare 404.",
+  "outputDirectory": "public",
 
   "functions": {
     "api/index.ts": {
-      "memory": 1024,
       "maxDuration": 30
     },
     "api/cron/outbox.ts": {
-      "memory": 1024,
       "maxDuration": 60
     }
   },
 
+  "// rewrites": "No entry for /api/* — filesystem routing already serves those functions directly, and an identity rewrite there is at best a no-op and at worst a loop.",
   "rewrites": [
-    { "source": "/api/cron/:path*", "destination": "/api/cron/:path*" },
     { "source": "/health", "destination": "/api/index" },
     { "source": "/v1/:path*", "destination": "/api/index" }
   ],

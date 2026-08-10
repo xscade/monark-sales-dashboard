@@ -1,0 +1,17 @@
+node_modules/
+dist/
+build/
+.next/
+.turbo/
+
+# Secrets. .env holds the credential-encryption key and platform tokens.
+.env
+.env.local
+.env.*.local
+*.pem
+*-service-account*.json
+
+.DS_Store
+*.log
+coverage/
+.vitest/

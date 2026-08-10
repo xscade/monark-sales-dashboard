@@ -1,0 +1,36 @@
+{
+  "name": "monark",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Monark Sales Intelligence Platform — lead CRM, walk-in/site-visit tracking, and offline conversion feedback to Meta and Google.",
+  "engines": {
+    "node": ">=22"
+  },
+  "packageManager": "pnpm@10.27.0",
+  "scripts": {
+    "db:generate": "pnpm --filter @monark/db generate",
+    "db:migrate": "pnpm --filter @monark/db migrate",
+    "db:seed": "pnpm --filter @monark/db seed",
+    "db:studio": "pnpm --filter @monark/db studio",
+    "db:check": "pnpm --filter @monark/db check",
+    "dev": "pnpm --filter @monark/api dev",
+    "worker": "pnpm --filter @monark/worker dev",
+    "build": "pnpm -r build",
+    "typecheck": "pnpm -r typecheck && tsc --noEmit -p tsconfig.json",
+    "test": "pnpm -r test"
+  },
+  "dependencies": {
+    "@monark/db": "workspace:*",
+    "@monark/services": "workspace:*",
+    "hono": "^4.6.16"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.5",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.3",
+    "vitest": "^3.0.5"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": ["esbuild"]
+  }
+}

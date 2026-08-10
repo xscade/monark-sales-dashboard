@@ -1,0 +1,27 @@
+{
+  "version": "7",
+  "dialect": "postgresql",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "7",
+      "when": 1786300856988,
+      "tag": "0000_amused_dexter_bennett",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1786300900000,
+      "tag": "0001_lead_reference_sequence",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1786300950000,
+      "tag": "0002_supabase_rls_lockdown",
+      "breakpoints": true
+    }
+  ]
+}

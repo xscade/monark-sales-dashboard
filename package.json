@@ -16,20 +16,25 @@
     "dev": "pnpm --filter @monark/api dev",
     "worker": "pnpm --filter @monark/worker dev",
     "typecheck": "pnpm -r typecheck && tsc --noEmit -p tsconfig.json",
-    "test": "pnpm -r test"
+    "test": "pnpm -r test",
+    "build:vercel": "node scripts/build-vercel.mjs"
   },
   "dependencies": {
+    "@hono/node-server": "^1.19.17",
     "@monark/db": "workspace:*",
     "@monark/services": "workspace:*",
     "hono": "^4.6.16"
   },
   "devDependencies": {
     "@types/node": "^22.10.5",
+    "esbuild": "^0.24.2",
     "tsx": "^4.19.2",
     "typescript": "^5.7.3",
     "vitest": "^3.0.5"
   },
   "pnpm": {
-    "onlyBuiltDependencies": ["esbuild"]
+    "onlyBuiltDependencies": [
+      "esbuild"
+    ]
   }
 }

@@ -1,22 +1,18 @@
+import { getRequestListener } from "@hono/node-server";
 import app from "../apps/api/src/app";
 
 /**
  * Vercel serverless entry point.
  *
- * `vercel.json` rewrites /health and /v1/* here, so Hono keeps doing the
- * routing and the deployment stays a single function rather than one per
- * endpoint — each distinct function gets its own cold start and its own
- * connection pool to Supabase.
+ * Exported as a Node-style `(req, res)` listener, NOT the Web-standard
+ * `(Request) => Response`. Vercel's Node launcher calls the default export with
+ * `(req, res)` and ignores the return value, so exporting `app.fetch` directly
+ * produces a function that builds a perfectly good Response which is then
+ * dropped on the floor — the request hangs until the 30s timeout.
  *
- * `app.fetch` is `(Request) => Promise<Response>`, which is exactly the
- * Web-standard signature Vercel's Node runtime accepts — the same shape as
- * api/cron/outbox.ts. Using it directly rather than `hono/vercel`'s `handle`,
- * which is really the Next.js App Router adapter: one less layer, and both
- * functions now succeed or fail together instead of for different reasons.
- *
- * No `export const config` here on purpose. Runtime and maxDuration are
- * declared once, in vercel.json's `functions` block. An unrecognised `runtime`
- * value makes the builder skip the function entirely, which presents as a 404
- * on every route with no error anywhere.
+ * `@vercel/node` normally detects a Web-style handler and wraps it. This build
+ * uses the Build Output API directly (see scripts/build-vercel.mjs), so the
+ * wrapping is ours to do. `getRequestListener` is exactly that adapter, and it
+ * is the same one the local dev server uses — so both paths run identical code.
  */
-export default app.fetch;
+export default getRequestListener(app.fetch);

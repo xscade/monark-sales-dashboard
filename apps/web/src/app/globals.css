@@ -1,0 +1,47 @@
+@import "tailwindcss";
+
+/**
+ * Sales floor first.
+ *
+ * This gets used on a laptop in an office and on a phone at a site visit, often
+ * in bright daylight. High contrast, generous tap targets, and no decorative
+ * chrome competing with the data.
+ */
+@theme {
+  --color-brand-50: #eef4ff;
+  --color-brand-100: #dae6ff;
+  --color-brand-500: #2f6bff;
+  --color-brand-600: #1e52e0;
+  --color-brand-700: #1a43b4;
+
+  --color-stage-new: #94a3b8;
+  --color-stage-contacted: #38bdf8;
+  --color-stage-qualified: #22d3ee;
+  --color-stage-visit_scheduled: #a78bfa;
+  --color-stage-visited: #f59e0b;
+  --color-stage-negotiating: #fb923c;
+  --color-stage-token_paid: #34d399;
+  --color-stage-booked: #10b981;
+  --color-stage-lost: #ef4444;
+  --color-stage-disqualified: #6b7280;
+}
+
+:root {
+  color-scheme: light dark;
+}
+
+body {
+  @apply bg-zinc-50 text-zinc-900 antialiased;
+}
+
+@media (prefers-color-scheme: dark) {
+  body {
+    @apply bg-zinc-950 text-zinc-100;
+  }
+}
+
+/* Numeric columns must line up — a funnel table where the digits jitter is
+   noticeably harder to scan. */
+.tabular {
+  font-variant-numeric: tabular-nums;
+}

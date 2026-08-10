@@ -100,24 +100,44 @@ errors.
 like `"// note"` fail schema validation outright, so the reasoning lives here
 instead.
 
-- **`framework: null`** — explicit rather than omitted, so Vercel never
-  misdetects a framework from something in the workspace.
-- **No `buildCommand`, and no `build` script in the root `package.json`.**
-  `@vercel/node` compiles `api/*.ts` itself; there is nothing else to build.
-  This is deliberate rather than an omission: if a `build` script exists, Vercel
-  runs it and then *requires* an output directory afterwards — which is how you
-  get `No Output Directory named "public" found after the Build completed` from
-  a repo that has no build output to produce.
-- **No `outputDirectory` either.** With no framework and no build, Vercel serves
-  `public/` automatically when it exists. Setting it explicitly only adds a way
-  to fail; auto-detection degrades gracefully.
-- **No rewrite for `/api/*`** — filesystem routing already serves those
-  functions directly. An identity rewrite there is at best a no-op and at worst
-  a loop.
-- **No `export const config` in the function files.** Runtime and `maxDuration`
-  are declared once, here. An unrecognised `runtime` value makes the builder
-  skip the function entirely, which presents as a 404 on every route with
-  nothing in the logs to explain it.
+`vercel.json` is four lines because the build is done by
+`scripts/build-vercel.mjs`, which emits Vercel's **Build Output API v3**
+directly into `.vercel/output`. Routes, function config and static assets all
+live in that script, not in `vercel.json`.
+
+**Why not Vercel's zero-config `/api` handling?** Because `@vercel/node` cannot
+deploy a pnpm workspace whose packages ship raw TypeScript. It transpiles each
+file in place and then traces imports, so a package with
+`"main": "./src/index.ts"` fails two different ways and there is no setting that
+resolves both:
+
+| `main` points at | Failure |
+|---|---|
+| `./src/index.ts` | compiled to `.js`, but `main` still names the `.ts` → `Cannot find module .../index.ts` |
+| `./src/index.js` | that file does not exist when tracing runs → package never included → `Cannot find module '@monark/db'` |
+
+The conventional fix is to compile every workspace package to `dist/` and
+repoint `main` — which works, but then local development can no longer run
+straight from source.
+
+Bundling avoids both. esbuild resolves and compiles the TypeScript itself, so
+each function ships as one self-contained CommonJS file with no workspace
+imports left to resolve at runtime. Local dev keeps running from source via
+`tsx`, and cold starts get smaller.
+
+**The functions export a Node `(req, res)` listener, not a Web handler.**
+Vercel's Node launcher calls the default export with `(req, res)` and *ignores
+the return value*. Exporting `app.fetch` directly produces a function that
+builds a perfectly good `Response` which is then dropped, and the request hangs
+until the 30-second timeout. `@vercel/node` normally auto-wraps Web-style
+handlers; when you emit build output yourself, that wrapping is your job —
+hence `getRequestListener` in both entrypoints.
+
+To verify a change before deploying:
+
+```bash
+pnpm build:vercel
+```
 
 ### If every route returns 404
 

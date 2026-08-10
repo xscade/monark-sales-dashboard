@@ -15,3 +15,4 @@ build/
 *.log
 coverage/
 .vitest/
+.vercel

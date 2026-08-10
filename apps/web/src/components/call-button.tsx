@@ -1,8 +1,14 @@
 "use client";
 
 import { useState } from "react";
-import { Check, Copy, Phone, Smartphone } from "lucide-react";
-import type { CallTarget } from "@/lib/call";
+import { Check, Copy, MessageCircle, MessageSquare, Phone, Smartphone } from "lucide-react";
+import {
+  CONTACT_CHANNELS,
+  CONTACT_CHANNEL_HINTS,
+  CONTACT_CHANNEL_LABELS,
+  type CallTarget,
+  type ContactChannel,
+} from "@/lib/contact-channels";
 import {
   Dialog,
   DialogContent,
@@ -23,6 +29,12 @@ import {
  * identical on server and client, and with JavaScript off the anchor still
  * carries a working `tel:` href.
  */
+const CHANNEL_ICONS: Record<ContactChannel, typeof Phone> = {
+  call: Phone,
+  whatsapp: MessageCircle,
+  sms: MessageSquare,
+};
+
 export function CallButton({
   target,
   name,
@@ -34,6 +46,10 @@ export function CallButton({
 }) {
   const [open, setOpen] = useState(false);
   const [copied, setCopied] = useState(false);
+  // A follow-up is a call by default; the other two are a click away rather
+  // than a decision every time.
+  const [channel, setChannel] = useState<ContactChannel>("call");
+  const active = target.channels[channel];
 
   async function copyNumber() {
     try {
@@ -67,32 +83,56 @@ export function CallButton({
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Call {name}</DialogTitle>
+            <DialogTitle>{CONTACT_CHANNEL_LABELS[channel]} {name}</DialogTitle>
             <DialogDescription>
-              Scan this with your phone&rsquo;s camera — it opens the dialler with the number
-              already filled in.
+              Scan this with your phone&rsquo;s camera. {CONTACT_CHANNEL_HINTS[channel]}
             </DialogDescription>
           </DialogHeader>
+
+          {/* Each channel encodes its own URI. A QR carrying only a number is
+              read differently by every scanner — which is how a "call" ended up
+              opening Messages. */}
+          <div role="tablist" aria-label="Contact channel" className="flex gap-1 rounded-lg border p-1">
+            {CONTACT_CHANNELS.map((option) => {
+              const Icon = CHANNEL_ICONS[option];
+              const selected = option === channel;
+              return (
+                <button
+                  key={option}
+                  type="button"
+                  role="tab"
+                  aria-selected={selected}
+                  onClick={() => setChannel(option)}
+                  className={`flex flex-1 items-center justify-center gap-1.5 rounded-md px-2 py-1.5 text-xs font-medium transition ${
+                    selected ? "bg-brand-600 text-white" : "hover:bg-muted"
+                  }`}
+                >
+                  <Icon aria-hidden className="size-3.5" />
+                  {CONTACT_CHANNEL_LABELS[option]}
+                </button>
+              );
+            })}
+          </div>
 
           {/* The viewBox leaves four spare modules on every side — the quiet
               zone the spec asks for, without which some scanners never lock on.
               The white plate stays white in dark mode for the same reason. */}
           <div className="flex justify-center">
             <svg
-              viewBox={`-4 -4 ${target.qrSize + 8} ${target.qrSize + 8}`}
+              viewBox={`-4 -4 ${active.qrSize + 8} ${active.qrSize + 8}`}
               role="img"
-              aria-label={`QR code that dials ${target.display}`}
+              aria-label={`QR code that opens ${CONTACT_CHANNEL_LABELS[channel]} for ${target.display}`}
               className="size-52 rounded-lg bg-white p-2 shadow-xs ring-1 ring-black/5"
               shapeRendering="crispEdges"
             >
-              <path d={target.qrPath} fill="#000000" />
+              <path d={active.qrPath} fill="#000000" />
             </svg>
           </div>
 
           <div className="text-center">
             <p className="tabular text-lg font-semibold tracking-tight">{target.display}</p>
             <p className="mt-0.5 text-xs text-muted-foreground">
-              Country code {target.countryCode} included, so the scan dials correctly from any
+              Country code {target.countryCode} included, so the scan reaches them from any
               network.
             </p>
           </div>
@@ -107,11 +147,13 @@ export function CallButton({
               {copied ? "Copied" : "Copy number"}
             </button>
             <a
-              href={target.tel}
+              href={active.uri}
+              target={channel === "whatsapp" ? "_blank" : undefined}
+              rel={channel === "whatsapp" ? "noreferrer" : undefined}
               className="flex flex-1 items-center justify-center gap-1.5 rounded-lg bg-brand-600 px-3 py-2 text-sm font-medium text-white transition hover:bg-brand-700"
             >
               <Smartphone aria-hidden className="size-4" />
-              Call from this device
+              {CONTACT_CHANNEL_LABELS[channel]} from this device
             </a>
           </div>
         </DialogContent>

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildCallTarget } from "./call";
+import { buildCallTarget, CONTACT_CHANNELS } from "./call";
 
 describe("buildCallTarget", () => {
   it("returns nothing without a number", () => {
@@ -33,9 +33,27 @@ describe("buildCallTarget", () => {
     expect(target?.display).toBe("+1555010099998");
   });
 
-  it("produces a square QR matrix that encodes something", () => {
+  it("produces a square QR matrix per channel that encodes something", () => {
     const target = buildCallTarget("+919381167516");
-    expect(target?.qrSize).toBeGreaterThanOrEqual(21);
-    expect(target?.qrPath.length).toBeGreaterThan(0);
+    for (const channel of CONTACT_CHANNELS) {
+      expect(target?.channels[channel].qrSize).toBeGreaterThanOrEqual(21);
+      expect(target?.channels[channel].qrPath.length).toBeGreaterThan(0);
+    }
+  });
+
+  it("encodes an explicit scheme per channel, never a bare number", () => {
+    // A QR carrying only digits is interpreted differently by every scanner —
+    // which is how scanning a "call" code ended up opening Messages.
+    const target = buildCallTarget("+919381167516");
+    expect(target?.channels.call.uri).toBe("tel:+919381167516");
+    expect(target?.channels.sms.uri).toBe("sms:+919381167516");
+    // wa.me 404s on a leading "+", so the digits go in bare.
+    expect(target?.channels.whatsapp.uri).toBe("https://wa.me/919381167516");
+  });
+
+  it("gives each channel a distinct code", () => {
+    const target = buildCallTarget("+919381167516");
+    const paths = CONTACT_CHANNELS.map((channel) => target?.channels[channel].qrPath);
+    expect(new Set(paths).size).toBe(CONTACT_CHANNELS.length);
   });
 });

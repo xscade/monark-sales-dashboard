@@ -720,7 +720,7 @@ function StageMoveDialog({
         }}
         className="max-h-[90vh] w-full max-w-md overflow-y-auto rounded-xl border border-zinc-200 bg-white p-5 shadow-xl dark:border-zinc-800 dark:bg-zinc-900"
       >
-        <h2 id="stage-move-title" className="text-sm font-semibold">
+        <h2 id="stage-move-title" className="text-base font-semibold tracking-tight text-zinc-900 dark:text-zinc-50">
           {regression ? "Moving" : "Move"} {card.name} to {stageLabel(toStage)}
         </h2>
 
@@ -745,11 +745,14 @@ function StageMoveDialog({
         )}
 
         {followUp && (
-          <div className={regression ? "mt-5 border-t border-zinc-200 pt-4 dark:border-zinc-800" : "mt-3"}>
-            <p className="text-xs font-semibold uppercase tracking-wide text-zinc-500">
+          <div className={regression ? "mt-6 border-t border-zinc-200 pt-5 dark:border-zinc-800" : "mt-4"}>
+            {/* Section title sits above field chrome on purpose: a dense move
+                dialog reads as one wall of inputs unless the next step is
+                announced at a size the eye can latch onto. */}
+            <h3 className="text-base font-semibold tracking-tight text-zinc-900 dark:text-zinc-50">
               Next follow-up
-            </p>
-            <p className="mt-1 text-xs text-zinc-500">
+            </h3>
+            <p className="mt-1.5 text-sm leading-snug text-zinc-500">
               {lateStage
                 ? "Past Contacted, every move came out of a real conversation. Capture what was agreed while it is still fresh."
                 : "Every move gets a next step, so this lead cannot fall off the follow-up list."}

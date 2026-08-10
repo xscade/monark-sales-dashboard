@@ -257,10 +257,12 @@ function Footer({
  */
 function NextFollowUp({ context, offsetHours = 24 }: { context: string; offsetHours?: number }) {
   return (
-    <div className="mt-5 border-t border-zinc-200 pt-4 dark:border-zinc-800">
+    <div className="mt-6 border-t border-zinc-200 pt-5 dark:border-zinc-800">
       <input type="hidden" name="followUpContext" value={context} />
-      <p className="text-xs font-semibold uppercase tracking-wide text-zinc-500">Next follow-up</p>
-      <p className="mt-1 text-xs text-zinc-500">
+      <h3 className="text-base font-semibold tracking-tight text-zinc-900 dark:text-zinc-50">
+        Next follow-up
+      </h3>
+      <p className="mt-1.5 text-sm leading-snug text-zinc-500">
         Clear it to skip, but a lead with no next step is the one that goes quiet.
       </p>
       <div className="mt-3 grid gap-3 sm:grid-cols-2">

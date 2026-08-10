@@ -1,19 +1,8 @@
 import qrcode from "qrcode-generator";
 import { normalizePhone } from "@monark/core";
+import type { CallTarget, ChannelTarget } from "./contact-channels";
 
-export interface CallTarget {
-  /** E.164, country code always present: "+919381167516". */
-  e164: string;
-  /** What the QR encodes and what the link dials. */
-  tel: string;
-  /** Grouped so it can be read aloud or copied down: "+91 93811 67516". */
-  display: string;
-  /** Country calling code on its own, for labelling the number. */
-  countryCode: string;
-  /** SVG path for the dark modules, drawn inside a `0 0 size size` viewBox. */
-  qrPath: string;
-  qrSize: number;
-}
+export * from "./contact-channels";
 
 /**
  * Everything the Call control needs, resolved once on the server.
@@ -40,8 +29,25 @@ export function buildCallTarget(phone: string | null | undefined): CallTarget | 
   if (e164.replace(/\D/g, "").length < 6) return null;
 
   const tel = `tel:${e164}`;
+  // wa.me wants bare digits — a leading "+" in the path 404s.
+  const digits = e164.replace(/\D/g, "");
+
+  return {
+    e164,
+    tel,
+    display: formatCallDisplay(parsed?.countryCode, parsed?.nationalNumber, e164),
+    countryCode: parsed ? `+${parsed.countryCode}` : e164.slice(0, 3),
+    channels: {
+      call: encodeChannel(tel),
+      whatsapp: encodeChannel(`https://wa.me/${digits}`),
+      sms: encodeChannel(`sms:${e164}`),
+    },
+  };
+}
+
+function encodeChannel(uri: string): ChannelTarget {
   const qr = qrcode(0, "M");
-  qr.addData(tel);
+  qr.addData(uri);
   qr.make();
   const qrSize = qr.getModuleCount();
   let qrPath = "";
@@ -50,15 +56,7 @@ export function buildCallTarget(phone: string | null | undefined): CallTarget | 
       if (qr.isDark(row, col)) qrPath += `M${col} ${row}h1v1h-1z`;
     }
   }
-
-  return {
-    e164,
-    tel,
-    display: formatCallDisplay(parsed?.countryCode, parsed?.nationalNumber, e164),
-    countryCode: parsed ? `+${parsed.countryCode}` : e164.slice(0, 3),
-    qrPath,
-    qrSize,
-  };
+  return { uri, qrPath, qrSize };
 }
 
 /** "+91 93811 67516" — the country code split off, the rest grouped in fives. */

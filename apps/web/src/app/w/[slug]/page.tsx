@@ -1,8 +1,9 @@
 import { notFound } from "next/navigation";
 import { Building2 } from "lucide-react";
-import { PublicWalkInForm } from "@/components/public-walk-in-form";
+import { PublicWalkInGate } from "@/components/public-walk-in-gate";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { getPublicWalkInLink, recordWalkInLinkView } from "@/lib/walk-in-link-queries";
+import { hasWalkInLinkSession } from "@/lib/walk-in-link-actions";
 import { WALK_IN_LINK_TYPE_LABELS } from "@/lib/walk-in-links";
 
 export const dynamic = "force-dynamic";
@@ -28,7 +29,10 @@ export default async function PublicWalkInPage({
 
   const expired = link.expiresAt ? new Date(link.expiresAt).getTime() < Date.now() : false;
   const open = link.isActive && !expired;
-  if (open) await recordWalkInLinkView(link.id);
+  const unlocked = open ? await hasWalkInLinkSession(link.slug) : false;
+  // A view is somebody arriving at the door. Counting the desk's own reloads
+  // once it is already unlocked would make the open-rate meaningless.
+  if (open && !unlocked) await recordWalkInLinkView(link.id);
 
   return (
     <main className="mx-auto flex min-h-screen max-w-lg flex-col justify-center px-4 py-10">
@@ -49,16 +53,17 @@ export default async function PublicWalkInPage({
         <CardHeader className="border-b py-5">
           <CardTitle className="flex items-center gap-2 text-base">
             <Building2 className="size-4" />
-            {open ? "Visitor check-in" : "Check-in closed"}
+            {!open ? "Check-in closed" : unlocked ? "Visitor check-in" : "Locked"}
           </CardTitle>
         </CardHeader>
         <CardContent className="py-6">
           {open ? (
-            <PublicWalkInForm
+            <PublicWalkInGate
               slug={link.slug}
               linkType={link.linkType}
               extraFields={link.extraFields ?? []}
               projectName={link.projectName}
+              unlocked={unlocked}
             />
           ) : (
             <p className="text-sm text-muted-foreground">

@@ -4,7 +4,10 @@ import { getDb } from "@monark/db";
 import { sql } from "drizzle-orm";
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
+import { randomUUID } from "node:crypto";
+import { stageRank, type LeadStage } from "@monark/core/pipeline";
 import { requirePermission } from "./auth";
+import { lockLeadForUpdate } from "./lead-lock";
 import { checkInVisit, updateLeadProject } from "./actions";
 import { parseLocalDateTime } from "./datetime";
 import { insertFollowUpTask } from "./follow-up-sync";
@@ -182,6 +185,64 @@ export async function getStageAdvanceContext(
   };
 }
 
+/**
+ * Puts the stage where the person dropped the card.
+ *
+ * Check-in and scheduling only ever move a lead *forward* — they were written
+ * for the desk, where a visit never means "go back". Dragging a negotiating
+ * lead onto Visited therefore recorded the visit and silently left the card
+ * where it was. The workflow has already produced the evidence, so setting the
+ * stage here is backed by a real visit row rather than an unbacked edit; a
+ * regression still has to say why.
+ */
+async function alignStageAfterWorkflow(
+  leadId: string,
+  targetStage: string,
+  reason: string | null,
+): Promise<string | null> {
+  const user = await requirePermission("leads:write");
+  try {
+    await getDb().transaction(async (tx) => {
+      if (!(await lockLeadForUpdate(tx, user.orgId, leadId, user))) {
+        throw new Error("Lead not found");
+      }
+      const result = await tx.execute(sql`
+        SELECT stage::text AS stage FROM leads
+        WHERE org_id = ${user.orgId} AND id = ${leadId} LIMIT 1
+      `);
+      const current = (result.rows[0] as { stage: string } | undefined)?.stage;
+      if (!current || current === targetStage) return;
+
+      const regression = stageRank(targetStage as LeadStage) < stageRank(current as LeadStage);
+      if (regression && !reason) throw new Error("A reason is required to move this lead back");
+
+      await tx.execute(sql`
+        INSERT INTO lead_stage_history (id, org_id, lead_id, from_stage, to_stage, changed_by_user_id, changed_by, reason)
+        VALUES (${randomUUID()}, ${user.orgId}, ${leadId}, ${current}::lead_stage,
+                ${targetStage}::lead_stage, ${user.id}, 'user', ${reason})
+      `);
+      await tx.execute(sql`
+        UPDATE leads SET stage = ${targetStage}::lead_stage, last_activity_at = now(), updated_at = now()
+        WHERE org_id = ${user.orgId} AND id = ${leadId}
+      `);
+    });
+  } catch (error) {
+    return error instanceof Error ? error.message : "The stage could not be updated";
+  }
+  revalidatePath("/pipeline");
+  revalidatePath(`/leads/${leadId}`);
+  return null;
+}
+
+/** Reads the target stage the board dropped onto, if the dialog sent one. */
+async function applyTargetStage(formData: FormData): Promise<string | null> {
+  const targetStage = String(formData.get("targetStage") ?? "").trim();
+  const leadId = String(formData.get("leadId") ?? "").trim();
+  if (!targetStage || !leadId) return null;
+  const reason = String(formData.get("regressionReason") ?? "").trim() || null;
+  return alignStageAfterWorkflow(leadId, targetStage, reason);
+}
+
 const followUpFields = z.object({
   followUpAt: z.preprocess((value) => String(value ?? "").trim() || undefined, z.string().optional()),
   followUpChannel: z.enum(FOLLOW_UP_CHANNELS).default("call"),
@@ -269,6 +330,8 @@ export async function scheduleVisitFromBoard(
   if (projectError) return { ok: false, message: projectError };
   const result = await scheduleVisit({ ok: false }, formData);
   if (!result.ok) return { ok: false, message: result.message };
+  const stageError = await applyTargetStage(formData);
+  if (stageError) return { ok: false, message: stageError };
   const followUpWarning = await attachFollowUp(formData);
   return { ok: true, message: followUpWarning ?? result.message ?? "Visit scheduled" };
 }
@@ -290,6 +353,8 @@ export async function checkInFromBoard(
       message: error instanceof Error ? error.message : "The check-in could not be recorded",
     };
   }
+  const stageError = await applyTargetStage(formData);
+  if (stageError) return { ok: false, message: stageError };
   const followUpWarning = await attachFollowUp(formData);
   return { ok: true, message: followUpWarning ?? "Checked in" };
 }

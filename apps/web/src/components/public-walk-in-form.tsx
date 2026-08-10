@@ -1,7 +1,7 @@
 "use client";
 
-import { useActionState } from "react";
-import { AlertCircle, CheckCircle2, KeyRound } from "lucide-react";
+import { useActionState, useEffect } from "react";
+import { AlertCircle } from "lucide-react";
 import { submitPublicWalkIn, type PublicWalkInState } from "@/lib/walk-in-link-actions";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
@@ -22,30 +22,32 @@ export function PublicWalkInForm({
   linkType,
   extraFields,
   projectName,
+  onSaved,
+  onCancel,
 }: {
   slug: string;
   linkType: WalkInLinkType;
   extraFields: string[];
   projectName: string | null;
+  onSaved: (message: string) => void;
+  onCancel: () => void;
 }) {
   const [state, formAction, pending] = useActionState(submitPublicWalkIn, initialState);
   const has = (field: string) => extraFields.includes(field);
 
-  if (state.ok) {
-    return (
-      <Alert>
-        <CheckCircle2 />
-        <AlertTitle>You are checked in</AlertTitle>
-        <AlertDescription>{state.message}</AlertDescription>
-      </Alert>
-    );
-  }
+  // Hand control back to the desk screen so the next visitor starts clean,
+  // rather than leaving this person's details on a shared tablet.
+  useEffect(() => {
+    if (state.ok) onSaved(state.message ?? "Checked in");
+  }, [state.ok, state.message, onSaved]);
 
   return (
     <form action={formAction} className="space-y-6">
       <input type="hidden" name="slug" value={slug} />
 
-      {state.message && (
+      {/* `ok` carries a message too, and showing it in a destructive alert
+          flashed red for a frame before the screen handed back. */}
+      {state.message && !state.ok && (
         <Alert variant="destructive">
           <AlertCircle />
           <AlertTitle>Could not save</AlertTitle>
@@ -53,18 +55,9 @@ export function PublicWalkInForm({
         </Alert>
       )}
 
-      <div className="space-y-1.5">
-        <Label htmlFor="passcode" className="flex items-center gap-1.5">
-          <KeyRound className="size-3.5" />
-          Passcode
-        </Label>
-        <Input id="passcode" name="passcode" required autoComplete="off" placeholder="Ask the team for today's code" />
-        <FieldError state={state} name="passcode" />
-      </div>
-
       <div className="grid gap-4 sm:grid-cols-2">
         <div className="space-y-1.5 sm:col-span-2">
-          <Label htmlFor="name">Your name *</Label>
+          <Label htmlFor="name">Customer name *</Label>
           <Input id="name" name="name" required autoComplete="name" />
           <FieldError state={state} name="name" />
         </div>
@@ -142,12 +135,17 @@ export function PublicWalkInForm({
 
       <label className="flex items-start gap-2 rounded-xl border bg-muted/35 p-4 text-sm">
         <input type="checkbox" name="consent" className="mt-0.5 size-4 accent-primary" />
-        <span>I agree to be contacted about this enquiry and to my details being used for advertising measurement.</span>
+        <span>I agree to be contacted about this enquiry and to my details being used for marketing measurement.</span>
       </label>
 
-      <Button type="submit" size="lg" className="w-full" disabled={pending}>
-        {pending ? "Saving…" : "Check in"}
-      </Button>
+      <div className="flex gap-2">
+        <Button type="button" variant="outline" size="lg" onClick={onCancel} disabled={pending}>
+          Cancel
+        </Button>
+        <Button type="submit" size="lg" className="flex-1" disabled={pending}>
+          {pending ? "Saving…" : "Check in"}
+        </Button>
+      </div>
     </form>
   );
 }

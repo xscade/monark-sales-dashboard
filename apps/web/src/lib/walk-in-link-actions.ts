@@ -5,6 +5,7 @@ import { getDb, leadAssignments, leads, leadStageHistory, leadTouchpoints, perso
 import { emitConversionEvent, eventKeyFor, ingestLead } from "@monark/services";
 import { and, eq, sql } from "drizzle-orm";
 import { revalidatePath } from "next/cache";
+import { cookies } from "next/headers";
 import { z } from "zod";
 import { requirePermission } from "./auth";
 import {
@@ -158,10 +159,120 @@ export async function deleteWalkInLink(formData: FormData) {
   revalidatePath("/reports");
 }
 
+/**
+ * A desk session, not a per-visitor password.
+ *
+ * The link is opened once at the start of a shift and then used all day by
+ * whoever is standing there; asking the visitor for a passcode they were never
+ * given was the wrong shape entirely. The passcode now unlocks the device, and
+ * each visitor just fills the form.
+ *
+ * The cookie holds a value derived from the link's own stored hash rather than
+ * the passcode itself, so a stolen cookie unlocks this one link and cannot be
+ * replayed as the passcode anywhere else. httpOnly keeps it away from any
+ * script that manages to run on the page.
+ */
+function sessionToken(linkId: string, passcodeHash: string): string {
+  return createHash("sha256").update(`${linkId}:${passcodeHash}`, "utf8").digest("hex");
+}
+
+function sessionCookieName(slug: string): string {
+  return `monark_walkin_${slug}`;
+}
+
+/** A working day. Long enough for a shift, short enough that an abandoned
+ *  tablet does not stay unlocked all week. */
+const SESSION_MAX_AGE = 12 * 60 * 60;
+
+interface PublicLinkRow {
+  id: string;
+  orgId: string;
+  linkType: WalkInLinkType;
+  label: string;
+  passcodeHash: string;
+  projectId: string | null;
+  ownerUserId: string | null;
+  isActive: boolean;
+  expiresAt: Date | null;
+}
+
+async function loadPublicLink(slug: string): Promise<PublicLinkRow | null> {
+  const result = await getDb().execute(sql`
+    SELECT id, org_id AS "orgId", link_type::text AS "linkType", label,
+           passcode_hash AS "passcodeHash", project_id AS "projectId",
+           owner_user_id AS "ownerUserId", is_active AS "isActive", expires_at AS "expiresAt"
+    FROM walk_in_links
+    WHERE slug = ${slug}
+    LIMIT 1
+  `);
+  return (result.rows[0] as unknown as PublicLinkRow | undefined) ?? null;
+}
+
+function linkIsOpen(link: PublicLinkRow): boolean {
+  if (!link.isActive) return false;
+  return !link.expiresAt || new Date(link.expiresAt).getTime() >= Date.now();
+}
+
+/** Whether this browser already unlocked the link. Used by the page to decide
+ *  between the passcode gate and the capture screen. */
+export async function hasWalkInLinkSession(slug: string): Promise<boolean> {
+  const link = await loadPublicLink(slug);
+  if (!link || !linkIsOpen(link)) return false;
+  const jar = await cookies();
+  const supplied = jar.get(sessionCookieName(slug))?.value;
+  if (!supplied) return false;
+  const expected = sessionToken(link.id, link.passcodeHash);
+  const a = Buffer.from(supplied, "utf8");
+  const b = Buffer.from(expected, "utf8");
+  return a.length === b.length && timingSafeEqual(a, b);
+}
+
+export interface UnlockState {
+  ok: boolean;
+  message?: string;
+}
+
+export async function unlockWalkInLink(
+  _previous: UnlockState,
+  formData: FormData,
+): Promise<UnlockState> {
+  const parsed = z
+    .object({
+      slug: z.string().trim().min(4).max(64),
+      passcode: z.string().trim().min(1).max(64),
+    })
+    .safeParse({ slug: formData.get("slug"), passcode: formData.get("passcode") });
+  // Same message for every failure — a public endpoint that distinguishes
+  // "no such link" from "wrong passcode" is an oracle for enumerating slugs.
+  const rejected = { ok: false as const, message: "That passcode did not work. Check it with the team." };
+  if (!parsed.success) return rejected;
+
+  const link = await loadPublicLink(parsed.data.slug);
+  if (!link || !linkIsOpen(link)) return rejected;
+  if (!passcodeMatches(parsed.data.passcode, link.passcodeHash)) return rejected;
+
+  const jar = await cookies();
+  jar.set(sessionCookieName(parsed.data.slug), sessionToken(link.id, link.passcodeHash), {
+    httpOnly: true,
+    sameSite: "lax",
+    secure: process.env.NODE_ENV === "production",
+    path: `/w/${parsed.data.slug}`,
+    maxAge: SESSION_MAX_AGE,
+  });
+  return { ok: true };
+}
+
+/** Ends the desk session — the tablet is handed back or the shift is over. */
+export async function lockWalkInLink(formData: FormData): Promise<void> {
+  const slug = String(formData.get("slug") ?? "").trim();
+  if (!slug) return;
+  const jar = await cookies();
+  jar.delete({ name: sessionCookieName(slug), path: `/w/${slug}` });
+}
+
 const publicSubmitSchema = z
   .object({
     slug: z.string().trim().min(4).max(64),
-    passcode: z.string().trim().min(1, "Enter the passcode").max(64),
     name: z.string().trim().min(2, "Enter the visitor's name").max(160),
     phone: z.string().trim().min(6, "Enter a phone number").max(40),
     email: z.preprocess(
@@ -191,11 +302,13 @@ export interface PublicWalkInState {
 }
 
 /**
- * Submission from a public link. No session exists here.
+ * Submission from a public link.
  *
- * Everything that would normally come from the signed-in user — organisation,
- * project, lead owner — is taken from the link row rather than the request, so
- * a crafted form body cannot file a lead into another tenant or reassign it.
+ * Authorised by the desk session rather than a passcode in the body — the
+ * visitor filling this in was never given one. Everything that would normally
+ * come from a signed-in user — organisation, project, lead owner — is taken
+ * from the link row rather than the request, so a crafted form body cannot
+ * file a lead into another tenant or reassign it.
  */
 export async function submitPublicWalkIn(
   _previous: PublicWalkInState,
@@ -203,7 +316,6 @@ export async function submitPublicWalkIn(
 ): Promise<PublicWalkInState> {
   const parsed = publicSubmitSchema.safeParse({
     slug: formData.get("slug"),
-    passcode: formData.get("passcode"),
     name: formData.get("name"),
     phone: formData.get("phone"),
     email: formData.get("email"),
@@ -225,35 +337,19 @@ export async function submitPublicWalkIn(
   }
   const input = parsed.data;
 
-  const linkResult = await getDb().execute(sql`
-    SELECT id, org_id AS "orgId", link_type::text AS "linkType", label,
-           passcode_hash AS "passcodeHash", project_id AS "projectId",
-           owner_user_id AS "ownerUserId", is_active AS "isActive", expires_at AS "expiresAt"
-    FROM walk_in_links
-    WHERE slug = ${input.slug}
-    LIMIT 1
-  `);
-  const link = linkResult.rows[0] as
-    | {
-        id: string;
-        orgId: string;
-        linkType: WalkInLinkType;
-        label: string;
-        passcodeHash: string;
-        projectId: string | null;
-        ownerUserId: string | null;
-        isActive: boolean;
-        expiresAt: Date | null;
-      }
-    | undefined;
+  const link = await loadPublicLink(input.slug);
 
-  // One message for "no such link", "switched off", "expired" and "wrong
-  // passcode". A public endpoint that distinguishes them is an oracle for
+  // One message for "no such link", "switched off", "expired" and "session
+  // gone". A public endpoint that distinguishes them is an oracle for
   // enumerating valid slugs.
-  const rejected = { ok: false as const, message: "This link is not accepting entries. Check the passcode with the team." };
-  if (!link || !link.isActive) return rejected;
-  if (link.expiresAt && new Date(link.expiresAt).getTime() < Date.now()) return rejected;
-  if (!passcodeMatches(input.passcode, link.passcodeHash)) return rejected;
+  const rejected = {
+    ok: false as const,
+    message: "This device is no longer unlocked. Enter the passcode again to continue.",
+  };
+  if (!link || !linkIsOpen(link)) return rejected;
+  // The cookie is the authorisation. Re-checked on every submission so pausing
+  // a link or letting it expire takes effect immediately, not at next unlock.
+  if (!(await hasWalkInLinkSession(input.slug))) return rejected;
 
   const visitId = randomUUID();
   try {

@@ -13,6 +13,7 @@ import {
   type StageAdvanceContext,
   type StageAdvanceState,
 } from "@/lib/stage-advance-actions";
+import { stageRank, type LeadStage } from "@monark/core/pipeline";
 import { formatINR, stageLabel } from "@/lib/format";
 import { FOLLOW_UP_CHANNELS, FOLLOW_UP_CHANNEL_LABELS } from "@/lib/follow-ups";
 
@@ -336,6 +337,7 @@ function VisitForm({
   onDone: (message: string) => void;
 }) {
   const scheduling = toStage === "visit_scheduled";
+  const regressing = stageRank(toStage as LeadStage) < stageRank(context.stage as LeadStage);
   const [state, action, pending] = useActionState(
     scheduling ? scheduleVisitFromBoard : checkInFromBoard,
     initialState,
@@ -351,9 +353,32 @@ function VisitForm({
   return (
     <form action={action}>
       <input type="hidden" name="leadId" value={context.leadId} />
+      {/* The stage the card was dropped on. The visit workflows only ever move
+          a lead forward, so without this a backwards drop recorded the visit
+          and left the card sitting where it started. */}
+      <input type="hidden" name="targetStage" value={toStage} />
       {!scheduling && <input type="hidden" name="visitId" value={visitId} />}
       {!scheduling && <input type="hidden" name="checkInMethod" value="manual" />}
       {needsProject && <ProjectSelect context={context} />}
+
+      {regressing && (
+        <label className="mt-4 block">
+          <span className="mb-1 block text-xs font-medium text-zinc-500">
+            Why is this lead moving back to {stageLabel(toStage)}? *
+          </span>
+          <input
+            name="regressionReason"
+            required
+            maxLength={500}
+            placeholder="Re-visiting before deciding, brought family back…"
+            className={field}
+          />
+          <span className="mt-1 block text-xs text-zinc-500">
+            It is currently at {stageLabel(context.stage)}. Frequent regressions are either a
+            process problem or stage misuse, and only the reason tells them apart.
+          </span>
+        </label>
+      )}
 
       <div className="mt-4 grid gap-3 sm:grid-cols-2">
         <label className="block">

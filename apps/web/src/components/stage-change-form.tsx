@@ -4,7 +4,7 @@ import { useState } from "react";
 import { changeStage } from "@/lib/actions";
 import { SubmitButton } from "@/components/ui";
 import { stageLabel } from "@/lib/format";
-import { TERMINAL_STAGES } from "@monark/core";
+import { TERMINAL_STAGES } from "@monark/core/pipeline";
 
 const field =
   "w-full rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-950";

@@ -82,7 +82,9 @@ export default async function LeadDetailPage({ params }: { params: Promise<{ id:
     ...activities.map((a) => ({
       at: new Date(a.occurred_at),
       kind: "activity" as const,
-      title: a.type === "call" ? `Call — ${a.call_outcome ?? "logged"}` : a.type,
+      // The subject is the only part that says what actually happened; without
+      // it every follow-up task and note rendered as the bare word "task".
+      title: a.subject ?? (a.type === "call" ? `Call — ${a.call_outcome ?? "logged"}` : a.type),
       detail: a.body,
       meta: a.user_name,
     })),

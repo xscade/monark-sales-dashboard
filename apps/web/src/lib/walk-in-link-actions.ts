@@ -1,7 +1,7 @@
 "use server";
 
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
-import { getDb, leadAssignments, leads, leadStageHistory, leadTouchpoints, persons, visits } from "@monark/db";
+import { activities, getDb, leadAssignments, leads, leadStageHistory, leadTouchpoints, persons, visits } from "@monark/db";
 import { emitConversionEvent, eventKeyFor, ingestLead } from "@monark/services";
 import { and, eq, sql } from "drizzle-orm";
 import { revalidatePath } from "next/cache";
@@ -464,6 +464,44 @@ export async function submitPublicWalkIn(
         attributionExpiresAt: result.isNewLead
           ? result.attributionExpiresAt
           : (lead.firstAttributionExpiresAt ?? result.attributionExpiresAt),
+      });
+
+      // The visitor is told nothing — they filled a form and it worked. The
+      // team, though, needs to know this was somebody already on the books:
+      // a returning buyer walking back in is a far stronger signal than a
+      // first enquiry, and the dedupe that makes it one record also makes it
+      // invisible unless it is written down.
+      const returning = !result.isNewLead;
+      const detail = [
+        `Checked in at ${input.visitType.replace(/_/g, " ")} via ${link.label}`,
+        input.configurations?.length ? `Configurations: ${input.configurations.join(", ")}` : null,
+        input.accompanyingCount ? `${input.accompanyingCount} accompanying` : null,
+        input.intentRating ? `Self-rated interest ${input.intentRating}/5` : null,
+        input.notes,
+      ]
+        .filter(Boolean)
+        .join("\n");
+
+      await tx.insert(activities).values({
+        id: randomUUID(),
+        orgId: link.orgId,
+        leadId: result.leadId,
+        personId: result.personId,
+        type: "note",
+        subject: returning
+          ? `Returning customer checked in · ${link.label}`
+          : `New visitor checked in · ${link.label}`,
+        body: detail,
+        // Attributed to whoever the link routes to, so it lands in their feed
+        // rather than looking like it came from nobody.
+        userId: link.ownerUserId,
+        metadata: {
+          source: "public_walk_in_link",
+          walkInLinkId: link.id,
+          returning,
+          visitType: input.visitType,
+        },
+        occurredAt: now,
       });
 
       await tx.execute(sql`

@@ -94,6 +94,44 @@ because an open `/api/cron/outbox` lets anyone force a drain — and a forced
 drain against a misconfigured destination burns the retry budget on permanent
 errors.
 
+### Why vercel.json looks the way it does
+
+`vercel.json` is strict JSON with **no additional properties** — comment keys
+like `"// note"` fail schema validation outright, so the reasoning lives here
+instead.
+
+- **`framework: null`** — explicit rather than omitted, so Vercel never
+  misdetects a framework from something in the workspace.
+- **`buildCommand`** is a deliberate no-op. `@vercel/node` compiles `api/*.ts`
+  itself; there is nothing else to build. Leaving it unset makes Vercel run the
+  root `build` script instead, and a recursive workspace build that produces no
+  output is an easy way to fail a deploy for no reason.
+- **`outputDirectory: "public"`** — the directory must exist or the deploy fails
+  with *"No Output Directory found"*. It holds a small static status page, which
+  doubles as the first rung of the diagnostic ladder below.
+- **No rewrite for `/api/*`** — filesystem routing already serves those
+  functions directly. An identity rewrite there is at best a no-op and at worst
+  a loop.
+- **No `export const config` in the function files.** Runtime and `maxDuration`
+  are declared once, here. An unrecognised `runtime` value makes the builder
+  skip the function entirely, which presents as a 404 on every route with
+  nothing in the logs to explain it.
+
+### If every route returns 404
+
+A 404 on `/api/index` itself is not a routing problem — it means no function was
+deployed. Work down this ladder:
+
+| Symptom | Cause |
+|---|---|
+| `/` shows the status page, `/health` returns JSON | Working. |
+| `/` shows the page, `/health` 404s | Static deployed, functions did not build. Check the build log for `api/index.ts`. |
+| `/` also 404s | The deploy is not landing at all. Check **Root Directory** first. |
+
+**Root Directory must be blank** (Settings → General). The deployment surface —
+`api/` and `vercel.json` — lives at the repository root. Pointing Root Directory
+at `apps/api` means Vercel never sees either file, and every route 404s.
+
 ### Deployment Protection must be off for Production
 
 Vercel's Deployment Protection intercepts requests before your function runs and

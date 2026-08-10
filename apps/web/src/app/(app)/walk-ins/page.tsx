@@ -6,7 +6,7 @@ import { checkInVisit } from "@/lib/actions";
 import { Card, EmptyState, SourceBadge, StageBadge, SubmitButton } from "@/components/ui";
 import { formatRelative } from "@/lib/format";
 import { Button } from "@/components/ui/button";
-import { Plus } from "lucide-react";
+import { Link2, Plus } from "lucide-react";
 
 export const dynamic = "force-dynamic";
 
@@ -51,7 +51,12 @@ export default async function WalkInsPage({
           <h1 className="mt-1 text-2xl font-bold tracking-tight">Walk-in check-in</h1>
           <p className="mt-0.5 text-sm text-muted-foreground">Search existing customers or capture a first-time visitor.</p>
         </div>
-        {writable && <Button asChild><Link href="/walk-ins/new"><Plus />New walk-in</Link></Button>}
+        <div className="flex flex-wrap gap-2">
+          {can(user, "settings:write") && (
+            <Button asChild variant="outline"><Link href="/walk-ins/links"><Link2 />Channel links</Link></Button>
+          )}
+          {writable && <Button asChild><Link href="/walk-ins/new"><Plus />New walk-in</Link></Button>}
+        </div>
       </div>
 
       <form method="get">

@@ -111,6 +111,17 @@ export const visitStatus = pgEnum("visit_status", [
   "cancelled",
 ]);
 
+/**
+ * `token_paid`, `booked` and `registered` are derived states — each one must be
+ * backed by a matching booking row, so the availability board and the money
+ * never disagree.
+ *
+ * `sold` is deliberately NOT one of them. It is the manual override for stock
+ * that left the pipeline outside this CRM (a channel partner's sale, a legacy
+ * agreement, an owner allocation). Keeping it separate rather than reusing
+ * `booked` means a report can still answer "how much did we sell through the
+ * platform?" without counting units that never had a booking record.
+ */
 export const unitStatus = pgEnum("unit_status", [
   "available",
   "held",
@@ -118,6 +129,21 @@ export const unitStatus = pgEnum("unit_status", [
   "booked",
   "registered",
   "blocked",
+  "sold",
+]);
+
+/**
+ * Where a public walk-in link was handed out.
+ *
+ * This is the channel dimension the walk-in desk never had: a QR code taped to
+ * the site office door and a link WhatsApped by a broker produce identical
+ * visit rows today, so nobody can tell which channel actually brings buyers.
+ */
+export const walkInLinkType = pgEnum("walk_in_link_type", [
+  "corporate_office",
+  "project_site",
+  "broker",
+  "sales_team",
 ]);
 
 /**

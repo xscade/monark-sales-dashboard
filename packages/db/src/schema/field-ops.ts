@@ -10,10 +10,69 @@ import {
   uniqueIndex,
   uuid,
 } from "drizzle-orm/pg-core";
-import { unitStatus, visitStatus, visitType } from "./enums";
+import { unitStatus, visitStatus, visitType, walkInLinkType } from "./enums";
 import { orgs, projects, users } from "./org";
 import { leads } from "./leads";
 import { persons } from "./identity";
+
+/**
+ * A shareable, passcode-gated walk-in form scoped to one channel.
+ *
+ * The point is attribution, not convenience. Today a visitor captured by a
+ * broker and one captured at the site gate produce identical rows, so the only
+ * honest answer to "which channel is worth paying for?" is a shrug. Every
+ * submission through a link carries that link's id all the way to the visit,
+ * which makes the whole downstream funnel — arrivals, bookings, revenue —
+ * sliceable by channel without inventing a new reporting pipeline.
+ *
+ * The passcode is stored hashed. A link is public by design and will be
+ * forwarded; the passcode is what stops a scraped URL from filling the CRM
+ * with junk, so it must survive a database leak the same way an API key does.
+ */
+export const walkInLinks = pgTable(
+  "walk_in_links",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    orgId: uuid("org_id")
+      .notNull()
+      .references(() => orgs.id, { onDelete: "cascade" }),
+    /** Public path segment. Random, not guessable from the label. */
+    slug: text("slug").notNull(),
+    /** What the admin calls this channel: "Windwave gate QR", "Sai Realtors". */
+    label: text("label").notNull(),
+    linkType: walkInLinkType("link_type").notNull(),
+    /** Who owns the channel — the broker or team lead handing the link out.
+     *  Distinct from the visitor's own name captured by the form. */
+    contactName: text("contact_name"),
+    contactPhone: text("contact_phone"),
+    passcodeHash: text("passcode_hash").notNull(),
+    /** Pre-selected so a visitor never has to know which project they are at. */
+    projectId: uuid("project_id").references(() => projects.id, { onDelete: "set null" }),
+    /** Leads from this link land with this owner. */
+    ownerUserId: uuid("owner_user_id").references(() => users.id, { onDelete: "set null" }),
+    /** Which optional fields the public form renders. Keeping this per-link
+     *  matters: a gate QR should ask for as little as possible, a broker form
+     *  can afford to ask more. */
+    extraFields: jsonb("extra_fields").$type<string[]>().notNull().default([]),
+    isActive: boolean("is_active").notNull().default(true),
+    expiresAt: timestamp("expires_at", { withTimezone: true }),
+    /** Counters rather than an events table: the questions the admin actually
+     *  asks are "how many opened it" and "how many finished", and a row-per-view
+     *  table for a QR code on a gate grows without ever being read. */
+    viewCount: integer("view_count").notNull().default(0),
+    submissionCount: integer("submission_count").notNull().default(0),
+    lastSubmissionAt: timestamp("last_submission_at", { withTimezone: true }),
+    createdByUserId: uuid("created_by_user_id").references(() => users.id, {
+      onDelete: "set null",
+    }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("walk_in_links_slug_idx").on(t.slug),
+    index("walk_in_links_org_idx").on(t.orgId, t.isActive),
+  ],
+);
 
 /**
  * Walk-ins and site visits, unified.
@@ -68,10 +127,16 @@ export const visits = pgTable(
     nextAction: text("next_action"),
     notes: text("notes"),
 
+    /** Which public link produced this visit, when it came through one. This is
+     *  the join that makes every downstream outcome channel-attributable. */
+    walkInLinkId: uuid("walk_in_link_id").references(() => walkInLinks.id, {
+      onDelete: "set null",
+    }),
+
     /** Check-in method, for auditing self-reported visits. A QR scan at the
      *  site office is trustworthy; a manual entry three days later is not, and
      *  we should not feed the latter to ad platforms with equal confidence. */
-    checkInMethod: text("check_in_method").notNull().default("manual"), // manual | qr | geofence
+    checkInMethod: text("check_in_method").notNull().default("manual"), // manual | qr | geofence | public_link
     checkInLatitude: numeric("check_in_latitude", { precision: 10, scale: 7 }),
     checkInLongitude: numeric("check_in_longitude", { precision: 10, scale: 7 }),
 
@@ -86,6 +151,7 @@ export const visits = pgTable(
     index("visits_org_arrived_idx").on(t.orgId, t.arrivedAt),
     index("visits_org_scheduled_idx").on(t.orgId, t.scheduledAt, t.status),
     index("visits_host_idx").on(t.hostUserId),
+    index("visits_walk_in_link_idx").on(t.walkInLinkId, t.arrivedAt),
   ],
 );
 

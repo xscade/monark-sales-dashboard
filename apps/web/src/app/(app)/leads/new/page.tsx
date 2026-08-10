@@ -1,20 +1,16 @@
-import { ContactRound } from "lucide-react";
-import { CaptureForm } from "@/components/capture-form";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { createManualLead } from "@/lib/capture-actions";
-import { can, requirePermission } from "@/lib/auth";
-import { getLeadFormOptions } from "@/lib/form-options";
+import { redirect } from "next/navigation";
 
 export const dynamic = "force-dynamic";
 
+/**
+ * The separate "add lead" form is gone; capture is unified on the walk-in form,
+ * which collects everything this one did plus the arrival.
+ *
+ * The route survives as a redirect rather than a 404 because it is bookmarked,
+ * linked from older emails, and muscle memory. Lead ingestion from websites and
+ * ad platforms is unaffected — that runs through the public `/v1` API, which
+ * never touched this page.
+ */
 export default async function NewLeadPage() {
-  const user = await requirePermission("leads:write");
-  const options = await getLeadFormOptions(user.orgId);
-  const canAssign = can(user, "leads:assign");
-  return (
-    <div className="mx-auto max-w-4xl space-y-5">
-      <div><p className="text-xs font-semibold uppercase tracking-[0.16em] text-primary">Direct capture</p><h1 className="mt-1 flex items-center gap-2 text-2xl font-bold tracking-tight"><ContactRound className="size-6" />Add lead</h1><p className="mt-1 text-sm text-muted-foreground">Creates or matches the customer, records attribution and consent, then opens the opportunity.</p></div>
-      <Card className="gap-0 py-0 shadow-sm"><CardHeader className="border-b py-5"><CardTitle className="text-base">Lead information</CardTitle></CardHeader><CardContent className="py-6"><CaptureForm mode="lead" projects={options.projects} agents={canAssign ? options.agents : []} orgId={user.orgId} currentUserId={user.id} canAssign={canAssign} action={createManualLead} /></CardContent></Card>
-    </div>
-  );
+  redirect("/walk-ins/new");
 }

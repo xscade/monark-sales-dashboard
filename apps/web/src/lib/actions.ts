@@ -14,22 +14,16 @@ import { emitConversionEvent, eventKeyFor } from "@monark/services";
 import { and, eq, isNull, sql } from "drizzle-orm";
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
-import { requirePermission } from "./auth";
+import { requirePermission, type SessionUser } from "./auth";
 import { localDateTimeSchema, parseLocalDateTime } from "./datetime";
 import { lockLeadForUpdate } from "./lead-lock";
-
-const editableStages = ["new", "contacted", "qualified", "negotiating", "lost", "disqualified"] as const;
-const lostReasons = [
-  "not_interested", "budget_mismatch", "location_mismatch", "configuration_mismatch",
-  "possession_timeline_mismatch", "postponed", "no_response", "bought_competitor",
-  "invalid_contact", "duplicate", "spam_or_bot", "wrong_geography", "agent_or_broker",
-] as const;
+import { EDITABLE_STAGES, LOST_REASONS, type EditableStage, type LostReason } from "./stage-edit";
 
 const stageChangeSchema = z.object({
   leadId: z.string().uuid(),
-  toStage: z.enum(editableStages),
+  toStage: z.enum(EDITABLE_STAGES),
   reason: z.string().trim().max(500).optional(),
-  reasonCode: z.preprocess((value) => String(value ?? "").trim() || undefined, z.enum(lostReasons).optional()),
+  reasonCode: z.preprocess((value) => String(value ?? "").trim() || undefined, z.enum(LOST_REASONS).optional()),
 });
 
 const leadProjectSchema = z.object({
@@ -132,17 +126,21 @@ async function modelledValue(
   return Math.round(expected * (DEFAULT_STAGE_PRIORS[stage] ?? 0) * 100) / 100;
 }
 
-export async function changeStage(formData: FormData) {
-  const user = await requirePermission("leads:write");
-  const parsed = stageChangeSchema.safeParse({
-    leadId: formData.get("leadId"),
-    toStage: formData.get("toStage"),
-    reason: formData.get("reason"),
-    reasonCode: formData.get("reasonCode"),
-  });
-  if (!parsed.success) throw new Error("Invalid stage change");
-  const { leadId, toStage, reasonCode } = parsed.data;
-  const reason = parsed.data.reason || null;
+/**
+ * The one place a lead's stage moves.
+ *
+ * Shared by the lead page form and the pipeline board's drag-and-drop, because
+ * a stage change is never only a column update: it appends history, may set
+ * speed-to-lead, and emits the conversion event that reaches Meta and Google.
+ * Two copies of that would drift, and the drift would be invisible until the
+ * funnel numbers stopped adding up.
+ */
+async function applyStageChange(
+  user: SessionUser,
+  input: { leadId: string; toStage: EditableStage; reason: string | null; reasonCode?: LostReason },
+) {
+  const { leadId, toStage, reasonCode } = input;
+  const reason = input.reason || null;
   const isTerminalChange = toStage === "lost" || toStage === "disqualified";
   if (isTerminalChange && !reasonCode) throw new Error("Choose a structured closing reason");
 
@@ -227,6 +225,66 @@ export async function changeStage(formData: FormData) {
   revalidatePath(`/leads/${leadId}`);
   revalidatePath("/pipeline");
   revalidatePath("/leads");
+}
+
+export async function changeStage(formData: FormData) {
+  const user = await requirePermission("leads:write");
+  const parsed = stageChangeSchema.safeParse({
+    leadId: formData.get("leadId"),
+    toStage: formData.get("toStage"),
+    reason: formData.get("reason"),
+    reasonCode: formData.get("reasonCode"),
+  });
+  if (!parsed.success) throw new Error("Invalid stage change");
+
+  await applyStageChange(user, {
+    leadId: parsed.data.leadId,
+    toStage: parsed.data.toStage,
+    reason: parsed.data.reason ?? null,
+    reasonCode: parsed.data.reasonCode,
+  });
+}
+
+export interface StageMoveResult {
+  ok: boolean;
+  message?: string;
+}
+
+/**
+ * Stage change from the pipeline board.
+ *
+ * Returns a result instead of throwing so the board can roll the card back to
+ * the column it came from and say why, rather than replacing the whole screen
+ * with an error boundary mid-drag.
+ */
+export async function moveLeadStage(input: {
+  leadId: string;
+  toStage: string;
+  reason?: string;
+  reasonCode?: string;
+}): Promise<StageMoveResult> {
+  const user = await requirePermission("leads:write");
+  const parsed = stageChangeSchema.safeParse({
+    leadId: input.leadId,
+    toStage: input.toStage,
+    reason: input.reason,
+    reasonCode: input.reasonCode,
+  });
+  if (!parsed.success) {
+    return { ok: false, message: "That stage cannot be set from the board" };
+  }
+
+  try {
+    await applyStageChange(user, {
+      leadId: parsed.data.leadId,
+      toStage: parsed.data.toStage,
+      reason: parsed.data.reason ?? null,
+      reasonCode: parsed.data.reasonCode,
+    });
+  } catch (error) {
+    return { ok: false, message: error instanceof Error ? error.message : "Could not move the lead" };
+  }
+  return { ok: true };
 }
 
 /**

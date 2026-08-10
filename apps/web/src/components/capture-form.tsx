@@ -16,13 +16,13 @@ interface Option {
 }
 
 interface CaptureFormProps {
-  mode: "lead" | "walk-in";
   projects: (Option & { city?: string | null })[];
   agents: (Option & { role: string })[];
   orgId: string;
   currentUserId: string;
   canAssign?: boolean;
-  visitId?: string;
+  visitId: string;
+  siteVisitId: string;
   action: (state: CaptureState, formData: FormData) => Promise<CaptureState>;
 }
 
@@ -141,11 +141,21 @@ function sweepExpiredOfflineQueues(): string | null {
   return null;
 }
 
-export function CaptureForm({ mode, projects, agents, orgId, currentUserId, canAssign = false, visitId, action }: CaptureFormProps) {
+export function CaptureForm({ projects, agents, orgId, currentUserId, canAssign = false, visitId, siteVisitId, action }: CaptureFormProps) {
   const [state, formAction, pending] = useActionState(action, initialState);
-  const walkIn = mode === "walk-in";
+  // One capture surface. A separate "add lead" form asked the same questions
+  // and produced a weaker record, so the arrival is now a property of this form
+  // rather than a different page.
+  const walkIn = true;
   const defaultOwner = agents.some((agent) => agent.id === currentUserId) ? currentUserId : "";
   const [currentVisitId, setCurrentVisitId] = useState(visitId);
+  const [currentSiteVisitId, setCurrentSiteVisitId] = useState(siteVisitId);
+  const [visitType, setVisitType] = useState("corporate_office");
+  const [recordVisit, setRecordVisit] = useState(true);
+  const [alsoSiteVisit, setAlsoSiteVisit] = useState(false);
+  // A walk-in already standing at the project site IS the site visit; offering
+  // to record a second one would double-count the strongest signal we have.
+  const siteVisitRedundant = visitType === "project_site";
   const [offlineNotice, setOfflineNotice] = useState<string | null>(null);
   const [blockedItemId, setBlockedItemId] = useState<string | null>(null);
   const inFlight = useRef<string | null>(null);
@@ -260,6 +270,7 @@ export function CaptureForm({ mode, projects, agents, orgId, currentUserId, canA
     let id = values.visitId || currentVisitId || window.crypto.randomUUID();
     while (queue.items.some((item) => item.id === id)) id = window.crypto.randomUUID();
     values.visitId = id;
+    values.siteVisitId = values.siteVisitId || window.crypto.randomUUID();
     const queued = [...queue.items, { id, createdAt: Date.now(), values }];
     const stored = writeOfflineQueue(offlineQueueKey, queued);
     if (!stored.ok) {
@@ -268,12 +279,17 @@ export function CaptureForm({ mode, projects, agents, orgId, currentUserId, canA
     }
     form.reset();
     setCurrentVisitId(window.crypto.randomUUID());
+    setCurrentSiteVisitId(window.crypto.randomUUID());
+    setRecordVisit(true);
+    setAlsoSiteVisit(false);
+    setVisitType("corporate_office");
     setOfflineNotice(`Saved on this device. ${queued.length} walk-in${queued.length === 1 ? "" : "s"} will sync when online.`);
   }
 
   return (
     <form action={formAction} onSubmit={captureOffline} className="space-y-7">
-      {walkIn && currentVisitId && <input type="hidden" name="visitId" value={currentVisitId} />}
+      {currentVisitId && <input type="hidden" name="visitId" value={currentVisitId} />}
+      {currentSiteVisitId && <input type="hidden" name="siteVisitId" value={currentSiteVisitId} />}
       {walkIn && offlineNotice && (
         <Alert>
           {offlineNotice.includes("synced") || offlineNotice.includes("Syncing") ? <CloudUpload /> : <CloudOff />}
@@ -315,9 +331,11 @@ export function CaptureForm({ mode, projects, agents, orgId, currentUserId, canA
         <p className="mt-0.5 text-xs text-muted-foreground">Assign the enquiry and preserve how it reached the team.</p>
         <div className="mt-4 grid gap-4 sm:grid-cols-2">
           <div className="space-y-1.5">
-            <Label htmlFor="projectId">Project{walkIn ? " *" : ""}</Label>
-            <select id="projectId" name="projectId" required={walkIn} className="h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm shadow-xs outline-none focus-visible:ring-2 focus-visible:ring-ring">
-              <option value="">{walkIn ? "Select the project visited…" : "No project selected"}</option>
+            <Label htmlFor="projectId">Project{recordVisit ? " *" : ""}</Label>
+            {/* A recorded arrival must name a project — the visit conversion is
+                worthless to the ad platforms without one. An enquiry can wait. */}
+            <select id="projectId" name="projectId" required={recordVisit} className="h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm shadow-xs outline-none focus-visible:ring-2 focus-visible:ring-ring">
+              <option value="">{recordVisit ? "Select the project visited…" : "No project selected"}</option>
               {projects.map((project) => <option key={project.id} value={project.id}>{project.name}{project.city ? ` · ${project.city}` : ""}</option>)}
             </select>
             <FieldError state={state} name="projectId" />
@@ -330,28 +348,58 @@ export function CaptureForm({ mode, projects, agents, orgId, currentUserId, canA
             </select>
           </div> : <input type="hidden" name="ownerUserId" value={currentUserId} />}
 
-          {walkIn ? (
-            <>
-              <input type="hidden" name="source" value="walk_in" />
-              <div className="space-y-1.5"><Label htmlFor="visitType">Location</Label><select id="visitType" name="visitType" className="h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm"><option value="corporate_office">Corporate office</option><option value="project_site">Project site</option><option value="experience_centre">Experience centre</option></select></div>
-              <div className="grid grid-cols-2 gap-3">
-                <div className="space-y-1.5"><Label htmlFor="accompanyingCount">With visitor</Label><Input id="accompanyingCount" name="accompanyingCount" type="number" min={0} max={20} defaultValue={0} /></div>
-                <div className="space-y-1.5"><Label htmlFor="intentRating">Intent</Label><select id="intentRating" name="intentRating" className="h-9 w-full rounded-md border border-input bg-transparent px-2 text-sm"><option value="">Unrated</option><option value="5">Very high</option><option value="4">High</option><option value="3">Medium</option><option value="2">Low</option><option value="1">Exploring</option></select></div>
-              </div>
-              <div className="space-y-1.5"><Label htmlFor="accompanyingRelations">Who came with them</Label><Input id="accompanyingRelations" name="accompanyingRelations" placeholder="Spouse, parents" /></div>
-              <div className="space-y-1.5"><Label htmlFor="configurationsViewed">Configurations viewed</Label><Input id="configurationsViewed" name="configurationsViewed" placeholder="3 BHK, 4 BHK" /></div>
-              <div className="space-y-1.5"><Label htmlFor="unitsViewed">Plans or units shown</Label><Input id="unitsViewed" name="unitsViewed" placeholder="Type 1, A-804" /></div>
-              <div className="space-y-1.5"><Label htmlFor="nextAction">Next action</Label><Input id="nextAction" name="nextAction" placeholder="Site visit, family call, proposal" /></div>
-              <div className="space-y-1.5 sm:col-span-2"><Label htmlFor="objections">Objections</Label><Input id="objections" name="objections" placeholder="Price, floor, possession timeline" /></div>
-            </>
-          ) : (
-            <>
-              <div className="space-y-1.5"><Label htmlFor="source">Source</Label><select id="source" name="source" defaultValue="manual_entry" className="h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm"><option value="manual_entry">Manual entry</option><option value="phone_call">Phone call</option><option value="whatsapp">WhatsApp</option><option value="referral">Referral</option><option value="broker">Broker</option><option value="portal">Property portal</option><option value="walk_in">Walk-in</option><option value="other">Other</option></select></div>
-              <div className="space-y-1.5"><Label htmlFor="sourceDetail">Source detail</Label><Input id="sourceDetail" name="sourceDetail" placeholder="Referrer, portal, campaign…" /></div>
-            </>
-          )}
+          {/* Kept from the old lead form. A visitor sent by a broker is a
+              walk-in AND a broker enquiry; collapsing the two lost the channel. */}
+          <div className="space-y-1.5"><Label htmlFor="source">Source</Label><select id="source" name="source" defaultValue="walk_in" className="h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm"><option value="walk_in">Walk-in</option><option value="manual_entry">Manual entry</option><option value="phone_call">Phone call</option><option value="whatsapp">WhatsApp</option><option value="referral">Referral</option><option value="broker">Broker</option><option value="portal">Property portal</option><option value="other">Other</option></select></div>
+          <div className="space-y-1.5"><Label htmlFor="sourceDetail">Source detail</Label><Input id="sourceDetail" name="sourceDetail" placeholder="Referrer, portal, campaign…" /></div>
 
           <div className="space-y-1.5 sm:col-span-2"><Label htmlFor="notes">Notes</Label><Textarea id="notes" name="notes" rows={4} placeholder="Budget, configuration, context, and the promised next step…" /></div>
+        </div>
+      </section>
+
+      <section className="border-t pt-6">
+        <label className="flex items-start gap-2.5">
+          {/* Collapsing this section must also clear the site-visit block: its
+              date field is `required`, and a required control inside a hidden
+              container blocks submission with an error nobody can see. */}
+          <input type="checkbox" name="recordVisit" checked={recordVisit} onChange={(event) => { setRecordVisit(event.target.checked); if (!event.target.checked) setAlsoSiteVisit(false); }} className="mt-0.5 size-4 accent-primary" />
+          <span><span className="block text-sm font-bold">The visitor is here now</span><span className="block text-xs text-muted-foreground">Records the arrival and fires the offline conversion. Untick for a phone or online enquiry — the opportunity is still created.</span></span>
+        </label>
+
+        <div className={recordVisit ? "mt-4 grid gap-4 sm:grid-cols-2" : "hidden"}>
+          <div className="space-y-1.5"><Label htmlFor="visitType">Location</Label><select id="visitType" name="visitType" value={visitType} onChange={(event) => setVisitType(event.target.value)} className="h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm"><option value="corporate_office">Corporate office</option><option value="project_site">Project site</option><option value="experience_centre">Experience centre</option></select></div>
+          <div className="grid grid-cols-2 gap-3">
+            <div className="space-y-1.5"><Label htmlFor="accompanyingCount">With visitor</Label><Input id="accompanyingCount" name="accompanyingCount" type="number" min={0} max={20} defaultValue={0} /></div>
+            <div className="space-y-1.5"><Label htmlFor="intentRating">Intent</Label><select id="intentRating" name="intentRating" className="h-9 w-full rounded-md border border-input bg-transparent px-2 text-sm"><option value="">Unrated</option><option value="5">Very high</option><option value="4">High</option><option value="3">Medium</option><option value="2">Low</option><option value="1">Exploring</option></select></div>
+          </div>
+          <div className="space-y-1.5"><Label htmlFor="accompanyingRelations">Who came with them</Label><Input id="accompanyingRelations" name="accompanyingRelations" placeholder="Spouse, parents" /></div>
+          <div className="space-y-1.5"><Label htmlFor="configurationsViewed">Configurations viewed</Label><Input id="configurationsViewed" name="configurationsViewed" placeholder="3 BHK, 4 BHK" /></div>
+          <div className="space-y-1.5"><Label htmlFor="unitsViewed">Plans or units shown</Label><Input id="unitsViewed" name="unitsViewed" placeholder="Type 1, A-804" /></div>
+          <div className="space-y-1.5"><Label htmlFor="nextAction">Next action</Label><Input id="nextAction" name="nextAction" placeholder="Site visit, family call, proposal" /></div>
+          <div className="space-y-1.5 sm:col-span-2"><Label htmlFor="objections">Objections</Label><Input id="objections" name="objections" placeholder="Price, floor, possession timeline" /></div>
+
+          <div className="sm:col-span-2 rounded-xl border bg-muted/35 p-4">
+            <label className="flex items-start gap-2.5">
+              <input type="checkbox" name="alsoSiteVisit" checked={alsoSiteVisit && !siteVisitRedundant} disabled={siteVisitRedundant} onChange={(event) => setAlsoSiteVisit(event.target.checked)} className="mt-0.5 size-4 accent-primary disabled:opacity-40" />
+              <span><span className="block text-sm font-bold">They also visited the project site</span><span className="block text-xs text-muted-foreground">{siteVisitRedundant ? "Already recorded — this visit is at the project site." : "Records a second, separate site visit. Standing on the plot is a stronger signal than sitting in the office, and the two are reported to Meta and Google as different events."}</span></span>
+            </label>
+
+            {alsoSiteVisit && !siteVisitRedundant && (
+              <div className="mt-4 grid gap-4 sm:grid-cols-2">
+                <div className="space-y-1.5"><Label htmlFor="siteVisitAt">When they were on site *</Label><Input id="siteVisitAt" name="siteVisitAt" type="datetime-local" required /><FieldError state={state} name="siteVisitAt" /></div>
+                <div className="space-y-1.5">
+                  <Label htmlFor="siteVisitHostUserId">Site host</Label>
+                  <select id="siteVisitHostUserId" name="siteVisitHostUserId" defaultValue={defaultOwner} className="h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm">
+                    <option value="">Same as owner</option>
+                    {agents.map((agent) => <option key={agent.id} value={agent.id}>{agent.name} · {agent.role.replace(/_/g, " ")}</option>)}
+                  </select>
+                </div>
+                <div className="space-y-1.5"><Label htmlFor="siteVisitUnitsViewed">Units seen on site</Label><Input id="siteVisitUnitsViewed" name="siteVisitUnitsViewed" placeholder="A-804, sample flat" /></div>
+                <div className="space-y-1.5"><Label htmlFor="siteVisitIntentRating">Intent after the site visit</Label><select id="siteVisitIntentRating" name="siteVisitIntentRating" className="h-9 w-full rounded-md border border-input bg-transparent px-2 text-sm"><option value="">Unrated</option><option value="5">Very high</option><option value="4">High</option><option value="3">Medium</option><option value="2">Low</option><option value="1">Exploring</option></select></div>
+                <div className="space-y-1.5 sm:col-span-2"><Label htmlFor="siteVisitNotes">Site visit notes</Label><Input id="siteVisitNotes" name="siteVisitNotes" placeholder="Which tower, what they reacted to, who accompanied them" /></div>
+              </div>
+            )}
+          </div>
         </div>
       </section>
 
@@ -364,8 +412,8 @@ export function CaptureForm({ mode, projects, agents, orgId, currentUserId, canA
       </section>
 
       <div className="flex flex-col-reverse gap-2 border-t pt-5 sm:flex-row sm:justify-between">
-        <Button type="button" variant="ghost" asChild><Link href={walkIn ? "/walk-ins" : "/leads"}><ArrowLeft />Cancel</Link></Button>
-        <Button type="submit" size="lg" disabled={pending}>{pending ? "Saving…" : walkIn ? "Save & check in" : "Create lead"}</Button>
+        <Button type="button" variant="ghost" asChild><Link href="/walk-ins"><ArrowLeft />Cancel</Link></Button>
+        <Button type="submit" size="lg" disabled={pending}>{pending ? "Saving…" : recordVisit ? "Save & check in" : "Save enquiry"}</Button>
       </div>
     </form>
   );

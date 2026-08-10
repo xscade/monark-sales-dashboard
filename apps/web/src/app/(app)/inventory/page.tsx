@@ -1,18 +1,13 @@
 import Link from "next/link";
 import { Card, DataTable, EmptyState, SubmitButton, Td, Th } from "@/components/ui";
 import { can, requirePermission } from "@/lib/auth";
-import {
-  createUnitAction,
-  holdUnitAction,
-  releaseUnitHoldAction,
-  setUnitStatusAction,
-  updateUnitAction,
-} from "@/lib/commercial-actions";
+import { createUnitAction } from "@/lib/commercial-actions";
 import {
   listCommercialLeads,
   listCommercialProjects,
   listInventory,
 } from "@/lib/commercial-queries";
+import { UnitManagePanel } from "@/components/unit-manage-panel";
 import { formatDateTime, formatINR } from "@/lib/format";
 
 export const dynamic = "force-dynamic";
@@ -26,6 +21,7 @@ const UNIT_STATUSES = [
   "token_paid",
   "booked",
   "registered",
+  "sold",
   "blocked",
 ] as const;
 
@@ -35,6 +31,7 @@ const statusClass: Record<string, string> = {
   token_paid: "bg-cyan-100 text-cyan-700 dark:bg-cyan-950 dark:text-cyan-300",
   booked: "bg-green-600 text-white",
   registered: "bg-indigo-100 text-indigo-700 dark:bg-indigo-950 dark:text-indigo-300",
+  sold: "bg-emerald-600 text-white",
   blocked: "bg-zinc-200 text-zinc-700 dark:bg-zinc-800 dark:text-zinc-300",
 };
 
@@ -185,7 +182,13 @@ export default async function InventoryPage({
               {rows.map((unit) => {
                 const eligibleLeads = leads.filter((lead) => lead.projectId === unit.projectId);
                 return (
-                  <tr key={unit.id} className="hover:bg-zinc-50 dark:hover:bg-zinc-800/40">
+                  // Cells align to the top so the unit identity stays put when
+                  // the Manage panel expands underneath it, instead of drifting
+                  // down to the middle of a row that is suddenly 400px tall.
+                  <tr
+                    key={unit.id}
+                    className="align-top [&>td]:align-top hover:bg-zinc-50 dark:hover:bg-zinc-800/40"
+                  >
                     <Td>
                       <p className="font-medium">
                         {unit.tower ? `${unit.tower} · ` : ""}
@@ -215,81 +218,28 @@ export default async function InventoryPage({
                     </Td>
                     {mayWrite && (
                       <Td className="min-w-[250px]">
-                        <details>
-                          <summary className="cursor-pointer text-sm font-medium text-brand-600">
-                            Manage
-                          </summary>
-                          <div className="mt-3 space-y-4 rounded-lg border border-zinc-200 p-3 dark:border-zinc-700">
-                            <form action={updateUnitAction} className="grid gap-2 sm:grid-cols-2">
-                              <input type="hidden" name="unitId" value={unit.id} />
-                              <Field label="Tower" name="tower" defaultValue={unit.tower ?? ""} compact />
-                              <Field label="Unit" name="unitNumber" defaultValue={unit.unitNumber} required compact />
-                              <Field label="Floor" name="floor" type="number" defaultValue={unit.floor ?? ""} compact />
-                              <Field label="Configuration" name="configuration" defaultValue={unit.configuration} required compact />
-                              <Field label="Carpet sq ft" name="carpetAreaSqft" type="number" step="0.01" defaultValue={unit.carpetAreaSqft ?? ""} compact />
-                              <Field label="Saleable sq ft" name="saleableAreaSqft" type="number" step="0.01" defaultValue={unit.saleableAreaSqft ?? ""} compact />
-                              <Field label="Facing" name="facing" defaultValue={unit.facing ?? ""} compact />
-                              <Field label="Base price" name="basePrice" type="number" step="0.01" defaultValue={unit.basePrice ?? ""} compact />
-                              <Field label="All-in price" name="allInPrice" type="number" step="0.01" defaultValue={unit.allInPrice ?? ""} compact />
-                              <div className="flex items-end">
-                                <SubmitButton variant="secondary" className="w-full py-1.5 text-xs">
-                                  Save unit
-                                </SubmitButton>
-                              </div>
-                            </form>
-
-                            {(unit.status === "available" || unit.status === "blocked") && (
-                              <form action={setUnitStatusAction} className="flex items-end gap-2">
-                                <input type="hidden" name="unitId" value={unit.id} />
-                                <label className="min-w-0 flex-1">
-                                  <span className="mb-1 block text-xs text-zinc-500">Availability</span>
-                                  <select name="status" defaultValue={unit.status} className={inputClass}>
-                                    <option value="available">Available</option>
-                                    <option value="blocked">Blocked</option>
-                                  </select>
-                                </label>
-                                <SubmitButton variant="secondary">Update</SubmitButton>
-                              </form>
-                            )}
-
-                            {unit.holdId ? (
-                              <form action={releaseUnitHoldAction} className="space-y-2">
-                                <input type="hidden" name="holdId" value={unit.holdId} />
-                                <input
-                                  name="releaseReason"
-                                  required
-                                  defaultValue="Released manually"
-                                  className={inputClass}
-                                />
-                                <SubmitButton variant="danger" className="w-full">
-                                  Release hold
-                                </SubmitButton>
-                              </form>
-                            ) : (
-                              unit.status === "available" && (
-                                <form action={holdUnitAction} className="space-y-2">
-                                  <input type="hidden" name="unitId" value={unit.id} />
-                                  <label className="block">
-                                    <span className="mb-1 block text-xs text-zinc-500">Hold for lead</span>
-                                    <select name="leadId" required className={inputClass}>
-                                      <option value="">Select lead</option>
-                                      {eligibleLeads.map((lead) => (
-                                        <option key={lead.id} value={lead.id}>
-                                          {lead.reference} · {lead.fullName ?? lead.primaryPhone ?? "Unnamed"}
-                                        </option>
-                                      ))}
-                                    </select>
-                                  </label>
-                                  <div className="grid grid-cols-2 gap-2">
-                                    <Field label="Hours" name="hours" type="number" defaultValue={48} required compact />
-                                    <Field label="Reason" name="reason" placeholder="Price discussion" compact />
-                                  </div>
-                                  <SubmitButton className="w-full">Place hold</SubmitButton>
-                                </form>
-                              )
-                            )}
-                          </div>
-                        </details>
+                        <UnitManagePanel
+                          unit={{
+                            id: unit.id,
+                            tower: unit.tower,
+                            unitNumber: unit.unitNumber,
+                            floor: unit.floor,
+                            configuration: unit.configuration,
+                            carpetAreaSqft: unit.carpetAreaSqft,
+                            saleableAreaSqft: unit.saleableAreaSqft,
+                            facing: unit.facing,
+                            basePrice: unit.basePrice,
+                            allInPrice: unit.allInPrice,
+                            status: unit.status,
+                            holdId: unit.holdId,
+                          }}
+                          leads={eligibleLeads.map((lead) => ({
+                            id: lead.id,
+                            reference: lead.reference,
+                            fullName: lead.fullName,
+                            primaryPhone: lead.primaryPhone,
+                          }))}
+                        />
                       </Td>
                     )}
                   </tr>
@@ -306,21 +256,12 @@ export default async function InventoryPage({
 function Field({
   label,
   name,
-  compact = false,
   ...props
-}: {
-  label: string;
-  name: string;
-  compact?: boolean;
-} & React.InputHTMLAttributes<HTMLInputElement>) {
+}: { label: string; name: string } & React.InputHTMLAttributes<HTMLInputElement>) {
   return (
     <label className="block">
       <span className="mb-1 block text-xs text-zinc-500">{label}</span>
-      <input
-        name={name}
-        {...props}
-        className={`${inputClass} ${compact ? "py-1.5 text-xs" : ""}`}
-      />
+      <input name={name} {...props} className={inputClass} />
     </label>
   );
 }

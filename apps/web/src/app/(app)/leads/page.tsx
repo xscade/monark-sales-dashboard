@@ -57,7 +57,7 @@ export default async function LeadsPage({
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
-        {can(user, "leads:write") && <Button asChild size="sm"><Link href="/leads/new"><Plus />Add lead</Link></Button>}
+        {can(user, "leads:write") && <Button asChild size="sm"><Link href="/walk-ins/new"><Plus />Add lead</Link></Button>}
         <form method="get" className="flex flex-wrap items-center gap-2">
           <input
             type="search"

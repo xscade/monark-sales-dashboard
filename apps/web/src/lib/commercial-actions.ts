@@ -18,7 +18,17 @@ const unitStatusSchema = z.enum([
   "booked",
   "registered",
   "blocked",
+  "sold",
 ]);
+
+/**
+ * States a person may set directly on the availability control.
+ *
+ * `token_paid`, `booked` and `registered` are absent on purpose — those are
+ * written by the booking workflow that also records the money. `sold` is the
+ * one manual terminal state, for stock that left the pipeline outside this CRM.
+ */
+const manualUnitStatusSchema = z.enum(["available", "blocked", "sold"]);
 
 const bookingStatusSchema = z.enum([
   "token",
@@ -495,7 +505,7 @@ export async function updateUnitAction(formData: FormData) {
 export async function setUnitStatusAction(formData: FormData) {
   const user = await requirePermission("inventory:write");
   const input = z
-    .object({ unitId: z.string().uuid(), status: unitStatusSchema })
+    .object({ unitId: z.string().uuid(), status: manualUnitStatusSchema })
     .parse(Object.fromEntries(formData));
 
   await getDb().transaction(async (tx) => {
@@ -511,28 +521,17 @@ export async function setUnitStatusAction(formData: FormData) {
     `);
     const booking = bookingResult.rows[0] as { id: string; status: string } | undefined;
 
-    if ((input.status === "available" || input.status === "blocked") && (holds.length || booking)) {
-      throw new Error("Release the hold or cancel the booking before changing availability");
+    if (holds.length) {
+      throw new Error("Release the hold before changing availability");
     }
-    if (input.status === "held" && holds.length === 0) {
-      throw new Error("Held status requires an active hold record");
-    }
-    if (input.status === "held" && booking) {
-      throw new Error("A booked unit cannot be moved back to a hold");
-    }
-    if (["token_paid", "booked", "registered"].includes(input.status)) {
-      if (holds.length) throw new Error("Release the hold before applying a financial state");
-      const expected =
-        booking?.status === "token"
-          ? "token_paid"
-          : booking?.status === "registered"
-            ? "registered"
-            : booking && ["booked", "agreement_signed"].includes(booking.status)
-              ? "booked"
-              : null;
-      if (expected !== input.status) {
-        throw new Error("Financial unit states must be backed by a matching booking record");
-      }
+    // A booking is the system of record for money. Flipping the unit underneath
+    // one would leave the booking register describing a sale the board denies.
+    if (booking) {
+      throw new Error(
+        input.status === "sold"
+          ? "This unit already has a booking — advance the booking instead of marking it sold"
+          : "Cancel the booking before changing availability",
+      );
     }
 
     await tx.execute(sql`
@@ -543,11 +542,66 @@ export async function setUnitStatusAction(formData: FormData) {
     await writeAudit(tx, {
       orgId: user.orgId,
       actorUserId: user.id,
-      action: "unit.status_changed",
+      action: input.status === "sold" ? "unit.marked_sold" : "unit.status_changed",
       entityType: "unit",
       entityId: input.unitId,
       before: { status: unit.status },
       after: { status: input.status },
+    });
+  });
+
+  revalidateCommercial();
+}
+
+/**
+ * Remove a unit from the board entirely.
+ *
+ * Only ever a correction for stock that should not exist — a typo'd unit
+ * number, a duplicate import. Anything the business has actually transacted
+ * against refuses to delete, because a booking or a shortlist that points at a
+ * vanished unit turns a report into a lie rather than an error.
+ */
+export async function deleteUnitAction(formData: FormData) {
+  const user = await requirePermission("inventory:write");
+  const input = z
+    .object({ unitId: z.string().uuid() })
+    .parse(Object.fromEntries(formData));
+
+  await getDb().transaction(async (tx) => {
+    const unit = await lockUnit(tx, user.orgId, input.unitId);
+    const holds = await currentActiveHolds(tx, user.orgId, input.unitId);
+    if (holds.length) throw new Error("Release the hold before deleting this unit");
+
+    const blockers = await tx.execute(sql`
+      SELECT
+        EXISTS (SELECT 1 FROM bookings WHERE org_id = ${user.orgId} AND unit_id = ${input.unitId}) AS "hasBooking",
+        EXISTS (SELECT 1 FROM unit_interests WHERE org_id = ${user.orgId} AND unit_id = ${input.unitId}) AS "hasInterest",
+        EXISTS (SELECT 1 FROM unit_holds WHERE org_id = ${user.orgId} AND unit_id = ${input.unitId}) AS "hasHoldHistory"
+    `);
+    const blocker = blockers.rows[0] as {
+      hasBooking: boolean;
+      hasInterest: boolean;
+      hasHoldHistory: boolean;
+    };
+    if (blocker.hasBooking) {
+      throw new Error("This unit has a booking on record and cannot be deleted");
+    }
+    if (blocker.hasInterest || blocker.hasHoldHistory) {
+      throw new Error(
+        "This unit has shortlist or hold history — block it instead of deleting it",
+      );
+    }
+
+    await tx.execute(sql`
+      DELETE FROM units WHERE org_id = ${user.orgId} AND id = ${input.unitId}
+    `);
+    await writeAudit(tx, {
+      orgId: user.orgId,
+      actorUserId: user.id,
+      action: "unit.deleted",
+      entityType: "unit",
+      entityId: input.unitId,
+      before: { unitNumber: unit.unitNumber, status: unit.status, projectId: unit.projectId },
     });
   });
 

@@ -63,9 +63,12 @@ export default async function AppLayout({ children }: { children: React.ReactNod
     }))
     .filter((section) => section.items.length > 0) satisfies ShellNavSection[];
 
+  // Capture is one form now, so "Add lead" and the old "Check in" pointed at
+  // the same place. The second slot goes to site visits, which is the screen
+  // people actually wanted when they reached for check-in.
   const quickActions = [
-    ...(can(user, "leads:write") ? [{ href: "/leads/new", label: "Add lead" }] : []),
-    ...(can(user, "visits:write") ? [{ href: "/walk-ins/new", label: "Check in" }] : []),
+    ...(can(user, "visits:write") ? [{ href: "/walk-ins/new", label: "Add lead" }] : []),
+    ...(can(user, "visits:read") ? [{ href: "/site-visits", label: "Site visit" }] : []),
   ];
 
   return (

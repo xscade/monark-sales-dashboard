@@ -4,6 +4,7 @@ import {
   canViewSalesTeam,
   listCustomers,
   listSalesOwners,
+  normalizeCustomerSegment,
   resolveSalesOwnerFilter,
 } from "@/lib/sales-queries";
 import { formatNumber, formatRelative, maskPhoneDisplay } from "@/lib/format";
@@ -16,17 +17,19 @@ const PAGE_SIZE = 50;
 export default async function CustomersPage({
   searchParams,
 }: {
-  searchParams: Promise<{ owner?: string; q?: string; page?: string }>;
+  searchParams: Promise<{ owner?: string; q?: string; page?: string; segment?: string }>;
 }) {
   const user = await requirePermission("customers:read");
   const params = await searchParams;
   const page = Math.max(1, Number(params.page ?? 1) || 1);
+  const segment = normalizeCustomerSegment(params.segment);
   const teamView = canViewSalesTeam(user.role);
   const ownerId = resolveSalesOwnerFilter(user.role, user.id, params.owner);
   const [customers, owners] = await Promise.all([
     listCustomers(user.orgId, {
       ownerId,
       search: params.q,
+      segment,
       limit: PAGE_SIZE,
       offset: (page - 1) * PAGE_SIZE,
     }),
@@ -35,10 +38,11 @@ export default async function CustomersPage({
 
   const total = customers[0]?.totalCount ?? 0;
   const pages = Math.max(1, Math.ceil(total / PAGE_SIZE));
-  const buildHref = (nextPage: number) => {
+  const buildHref = (nextPage: number, nextSegment = segment) => {
     const query = new URLSearchParams();
     if (params.q) query.set("q", params.q);
     if (params.owner) query.set("owner", params.owner);
+    if (nextSegment === "contacts") query.set("segment", "contacts");
     if (nextPage > 1) query.set("page", String(nextPage));
     const suffix = query.toString();
     return suffix ? `/customers?${suffix}` : "/customers";
@@ -48,14 +52,37 @@ export default async function CustomersPage({
     <div className="space-y-5">
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
-          <h1 className="text-xl font-semibold">Customers</h1>
+          <h1 className="text-xl font-semibold">
+            {segment === "customers" ? "Customers" : "All contacts"}
+          </h1>
           <p className="mt-0.5 text-sm text-zinc-500">
-            {formatNumber(total)} customer{total === 1 ? "" : "s"}
+            {segment === "customers"
+              ? `${formatNumber(total)} customer${total === 1 ? "" : "s"} · everyone here has a live booking`
+              : `${formatNumber(total)} contact${total === 1 ? "" : "s"} · enquiries included`}
           </p>
+          {/* An enquiry is not a customer. Both views exist because the sales
+              team needs the address book too — but the word has to mean
+              something, or the count on this page answers no question at all. */}
+          <div className="mt-2 inline-flex rounded-lg border border-zinc-300 p-0.5 text-xs dark:border-zinc-700">
+            {(["customers", "contacts"] as const).map((option) => (
+              <Link
+                key={option}
+                href={buildHref(1, option)}
+                aria-current={segment === option ? "page" : undefined}
+                className={`rounded-md px-2.5 py-1 font-medium transition ${
+                  segment === option
+                    ? "bg-brand-600 text-white"
+                    : "text-zinc-600 hover:bg-zinc-100 dark:text-zinc-400 dark:hover:bg-zinc-800"
+                }`}
+              >
+                {option === "customers" ? "Customers" : "All contacts"}
+              </Link>
+            ))}
+          </div>
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          {can(user, "leads:write") && <Link
-            href="/leads/new"
+          {can(user, "visits:write") && <Link
+            href="/walk-ins/new"
             className="rounded-lg bg-brand-600 px-3 py-2 text-sm font-medium text-white hover:bg-brand-700"
           >
             Add customer
@@ -95,7 +122,14 @@ export default async function CustomersPage({
 
       <Card>
         {customers.length === 0 ? (
-          <EmptyState title="No customers match" hint="Try clearing the search or owner filter." />
+          <EmptyState
+            title={segment === "customers" ? "No customers yet" : "No contacts match"}
+            hint={
+              segment === "customers"
+                ? "A contact becomes a customer when their booking is confirmed. Switch to All contacts to see open enquiries."
+                : "Try clearing the search or owner filter."
+            }
+          />
         ) : (
           <DataTable>
             <thead className="border-b border-zinc-100 dark:border-zinc-800">
@@ -124,6 +158,15 @@ export default async function CustomersPage({
                             DNC
                           </span>
                         )}
+                        <span
+                          className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${
+                            customer.bookingCount > 0
+                              ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300"
+                              : "bg-zinc-100 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-400"
+                          }`}
+                        >
+                          {customer.bookingCount > 0 ? "Customer" : "Lead"}
+                        </span>
                       </div>
                       <p className="tabular mt-0.5 text-xs text-zinc-500">
                         {maskPhoneDisplay(customer.primaryPhone)}

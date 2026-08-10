@@ -7,6 +7,7 @@ import { and, eq, inArray } from "drizzle-orm";
 import { redirect } from "next/navigation";
 import { z } from "zod";
 import { can, requirePermission } from "./auth";
+import { localDateTimeSchema, parseLocalDateTime } from "./datetime";
 import { lockLeadForUpdate } from "./lead-lock";
 
 export interface CaptureState {
@@ -198,13 +199,13 @@ export async function createManualLead(
 }
 
 const walkInSchema = contactFields
-  .omit({ source: true })
   .extend({
-    projectId: z.preprocess(
-      (value) => String(value ?? "").trim(),
-      z.string().uuid("Choose the project for this visit"),
-    ),
     visitId: z.string().uuid(),
+    siteVisitId: z.string().uuid(),
+    /** Unticked for a phone or online enquiry. The opportunity is still
+     *  created; what is withheld is the claim that somebody turned up. */
+    recordVisit: z.boolean(),
+    alsoSiteVisit: z.boolean(),
     visitType: z.enum(["corporate_office", "project_site", "experience_centre"]),
     accompanyingCount: z.coerce.number().int().min(0).max(20),
     intentRating: z.preprocess(
@@ -216,17 +217,49 @@ const walkInSchema = contactFields
     unitsViewed: optionalList,
     objections: optionalList,
     nextAction: optionalText(300),
+    siteVisitAt: z.preprocess(
+      (value) => String(value ?? "").trim() || undefined,
+      localDateTimeSchema.optional(),
+    ),
+    siteVisitHostUserId: z.preprocess(
+      (value) => String(value ?? "").trim() || undefined,
+      z.string().uuid().optional(),
+    ),
+    siteVisitUnitsViewed: optionalList,
+    siteVisitIntentRating: z.preprocess(
+      (value) => String(value ?? "").trim() || undefined,
+      z.coerce.number().int().min(1).max(5).optional(),
+    ),
+    siteVisitNotes: optionalText(2000),
   })
-  .superRefine(requireContact);
+  .superRefine((value, ctx) => {
+    requireContact(value, ctx);
+    if (value.recordVisit && !value.projectId) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["projectId"],
+        message: "Choose the project for this visit",
+      });
+    }
+    // A site visit that cannot say when it happened cannot be dated inside
+    // Google's attribution window, which is the whole reason we record it.
+    if (value.recordVisit && value.alsoSiteVisit && value.visitType !== "project_site" && !value.siteVisitAt) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["siteVisitAt"],
+        message: "Add the date and time they were on site",
+      });
+    }
+  });
 
-export async function createFreshWalkIn(
-  _previous: CaptureState,
-  formData: FormData,
-): Promise<CaptureState> {
-  const user = await requirePermission("visits:write");
-  const parsed = walkInSchema.safeParse({
+function walkInPayload(formData: FormData) {
+  return {
     ...contactPayload(formData),
+    source: formData.get("source") || "walk_in",
     visitId: formData.get("visitId"),
+    siteVisitId: formData.get("siteVisitId"),
+    recordVisit: bool(formData, "recordVisit"),
+    alsoSiteVisit: bool(formData, "alsoSiteVisit"),
     visitType: formData.get("visitType") || "corporate_office",
     accompanyingCount: formData.get("accompanyingCount") || 0,
     intentRating: formData.get("intentRating"),
@@ -235,12 +268,46 @@ export async function createFreshWalkIn(
     unitsViewed: formData.get("unitsViewed"),
     objections: formData.get("objections"),
     nextAction: formData.get("nextAction"),
-  });
+    siteVisitAt: formData.get("siteVisitAt"),
+    siteVisitHostUserId: formData.get("siteVisitHostUserId"),
+    siteVisitUnitsViewed: formData.get("siteVisitUnitsViewed"),
+    siteVisitIntentRating: formData.get("siteVisitIntentRating"),
+    siteVisitNotes: formData.get("siteVisitNotes"),
+  };
+}
+
+/**
+ * The single capture surface.
+ *
+ * This used to be two forms — "add lead" and "new walk-in" — asking the same
+ * questions and disagreeing about which one owned the customer record. They are
+ * one thing: a person, an opportunity, and optionally the fact that the person
+ * physically turned up. The arrival is a checkbox, not a different page.
+ */
+export async function createFreshWalkIn(
+  _previous: CaptureState,
+  formData: FormData,
+): Promise<CaptureState> {
+  const user = await requirePermission("visits:write");
+  const parsed = walkInSchema.safeParse(walkInPayload(formData));
   if (!parsed.success) {
     return { ok: false, message: "Check the highlighted details", fieldErrors: parsed.error.flatten().fieldErrors };
   }
 
   const input = parsed.data;
+  const siteVisitAt = input.siteVisitAt
+    ? parseLocalDateTime(input.siteVisitAt, user.timezone)
+    : null;
+  if (input.siteVisitAt && !siteVisitAt) {
+    return { ok: false, message: "Check the highlighted details", fieldErrors: { siteVisitAt: ["Enter a valid date and time"] } };
+  }
+  if (siteVisitAt && siteVisitAt.getTime() > Date.now() + 60_000) {
+    return {
+      ok: false,
+      message: "Check the highlighted details",
+      fieldErrors: { siteVisitAt: ["A recorded site visit cannot be in the future — schedule it instead"] },
+    };
+  }
   const mayAssignOwner = can(user, "leads:assign");
   const ownerId = mayAssignOwner ? input.ownerUserId : user.id;
   const referenceError = await validateReferences(
@@ -280,8 +347,8 @@ export async function createFreshWalkIn(
         phone: input.phone,
         email: input.email,
         city: input.city,
-        source: "walk_in",
-        sourceDetail: input.sourceDetail || input.visitType,
+        source: input.source,
+        sourceDetail: input.sourceDetail || (input.recordVisit ? input.visitType : undefined),
         notes: input.notes,
         consent: {
           marketing: input.marketingConsent,
@@ -293,6 +360,8 @@ export async function createFreshWalkIn(
       });
       leadId = result.leadId;
       const visitId = input.visitId;
+      // Desk capture is never link-attributed; the public form has its own path.
+      const walkInLinkId: string | null = null;
       const now = new Date();
       const initialOwnerId = mayAssignOwner ? (ownerId ?? null) : user.id;
       if (!(await lockLeadForUpdate(
@@ -324,30 +393,12 @@ export async function createFreshWalkIn(
           .where(and(eq(persons.id, result.personId), eq(persons.orgId, user.orgId)));
       }
 
-      await tx.insert(visits).values({
-        id: visitId,
-        orgId: user.orgId,
-        leadId: result.leadId,
-        personId: result.personId,
-        projectId: lead.projectId,
-        type: input.visitType,
-        status: "arrived",
-        arrivedAt: now,
-        hostUserId: ownerId ?? user.id,
-        accompanyingCount: input.accompanyingCount,
-        accompanyingRelations: input.accompanyingRelations ?? null,
-        configurationsViewed: input.configurationsViewed ?? null,
-        unitsViewed: input.unitsViewed ?? null,
-        intentRating: input.intentRating ?? null,
-        objections: input.objections ?? null,
-        nextAction: input.nextAction ?? null,
-        notes: input.notes ?? null,
-        checkInMethod: "manual",
-        createdByUserId: user.id,
-      });
-
-      const shouldAdvance = ["new", "contacted", "qualified", "visit_scheduled"].includes(lead.stage);
+      // Only the recorded arrival advances the funnel. An enquiry captured on
+      // this same form stays where the lead already was.
+      const shouldAdvance = input.recordVisit &&
+        ["new", "contacted", "qualified", "visit_scheduled"].includes(lead.stage);
       const resultingLeadStage = shouldAdvance ? "visited" : lead.stage;
+
       if (shouldAdvance) {
         await tx.insert(leadStageHistory).values({
           id: randomUUID(),
@@ -377,24 +428,91 @@ export async function createFreshWalkIn(
         });
       }
 
-      await emitConversionEvent(tx, {
-        orgId: user.orgId,
-        eventType: input.visitType === "project_site" ? "site_visit_completed" : "walk_in_completed",
-        personId: result.personId,
-        leadId: result.leadId,
-        projectId: lead.projectId,
-        touchpointId: result.isNewLead
-          ? result.touchpointId
-          : (lead.firstTouchpointId ?? result.touchpointId),
-        occurredAt: now,
-        eventKey: eventKeyFor.visitCompleted(visitId),
-        stageAtEvent: resultingLeadStage,
-        sourceEntityType: "visit",
-        sourceEntityId: visitId,
-        attributionExpiresAt: result.isNewLead
-          ? result.attributionExpiresAt
-          : (lead.firstAttributionExpiresAt ?? result.attributionExpiresAt),
-      });
+      const touchpointId = result.isNewLead
+        ? result.touchpointId
+        : (lead.firstTouchpointId ?? result.touchpointId);
+      const attributionExpiresAt = result.isNewLead
+        ? result.attributionExpiresAt
+        : (lead.firstAttributionExpiresAt ?? result.attributionExpiresAt);
+
+      if (input.recordVisit) {
+        await tx.insert(visits).values({
+          id: visitId,
+          orgId: user.orgId,
+          leadId: result.leadId,
+          personId: result.personId,
+          projectId: lead.projectId,
+          type: input.visitType,
+          status: "arrived",
+          arrivedAt: now,
+          hostUserId: ownerId ?? user.id,
+          accompanyingCount: input.accompanyingCount,
+          accompanyingRelations: input.accompanyingRelations ?? null,
+          configurationsViewed: input.configurationsViewed ?? null,
+          unitsViewed: input.unitsViewed ?? null,
+          intentRating: input.intentRating ?? null,
+          objections: input.objections ?? null,
+          nextAction: input.nextAction ?? null,
+          notes: input.notes ?? null,
+          checkInMethod: walkInLinkId ? "public_link" : "manual",
+          walkInLinkId,
+          createdByUserId: user.id,
+        });
+
+        await emitConversionEvent(tx, {
+          orgId: user.orgId,
+          eventType: input.visitType === "project_site" ? "site_visit_completed" : "walk_in_completed",
+          personId: result.personId,
+          leadId: result.leadId,
+          projectId: lead.projectId,
+          touchpointId,
+          occurredAt: now,
+          eventKey: eventKeyFor.visitCompleted(visitId),
+          stageAtEvent: resultingLeadStage,
+          sourceEntityType: "visit",
+          sourceEntityId: visitId,
+          attributionExpiresAt,
+        });
+      }
+
+      // A second, separate record. Someone who sat in the corporate office AND
+      // walked the plot produced two distinct pieces of evidence, and merging
+      // them into one row would throw away the stronger of the two.
+      if (input.recordVisit && input.alsoSiteVisit && input.visitType !== "project_site" && siteVisitAt) {
+        await tx.insert(visits).values({
+          id: input.siteVisitId,
+          orgId: user.orgId,
+          leadId: result.leadId,
+          personId: result.personId,
+          projectId: lead.projectId,
+          type: "project_site",
+          status: "completed",
+          arrivedAt: siteVisitAt,
+          hostUserId: input.siteVisitHostUserId ?? ownerId ?? user.id,
+          accompanyingCount: input.accompanyingCount,
+          unitsViewed: input.siteVisitUnitsViewed ?? null,
+          intentRating: input.siteVisitIntentRating ?? input.intentRating ?? null,
+          notes: input.siteVisitNotes ?? null,
+          checkInMethod: "manual",
+          walkInLinkId,
+          createdByUserId: user.id,
+        });
+
+        await emitConversionEvent(tx, {
+          orgId: user.orgId,
+          eventType: "site_visit_completed",
+          personId: result.personId,
+          leadId: result.leadId,
+          projectId: lead.projectId,
+          touchpointId,
+          occurredAt: siteVisitAt,
+          eventKey: eventKeyFor.visitCompleted(input.siteVisitId),
+          stageAtEvent: resultingLeadStage,
+          sourceEntityType: "visit",
+          sourceEntityId: input.siteVisitId,
+          attributionExpiresAt,
+        });
+      }
     });
   } catch {
     return { ok: false, message: "The walk-in could not be saved. The form is still here—please try again." };

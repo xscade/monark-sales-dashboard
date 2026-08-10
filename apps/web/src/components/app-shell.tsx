@@ -13,7 +13,6 @@ import {
   CalendarCheck2,
   ChevronRight,
   CircleUserRound,
-  ClipboardCheck,
   ContactRound,
   Gauge,
   LayoutDashboard,
@@ -250,7 +249,7 @@ export function AppShell({ children, user, sections, quickActions, signOutAction
               {quickActions.slice(0, 2).map((item, index) => (
                 <Button key={item.href} asChild variant={index === 0 ? "default" : "outline"} size="sm">
                   <Link href={item.href}>
-                    {index === 0 ? <Plus /> : <ClipboardCheck />}
+                    {index === 0 ? <Plus /> : <Building2 />}
                     {item.label}
                   </Link>
                 </Button>

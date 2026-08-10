@@ -304,15 +304,37 @@ export interface CustomerListRow {
   isSuppressed: boolean;
   opportunityCount: number;
   openOpportunityCount: number;
+  bookingCount: number;
   projectNames: string | null;
   ownerNames: string | null;
   lastActivityAt: Date | string;
   totalCount: number;
 }
 
+/**
+ * A lead is somebody who enquired. A customer is somebody who bought.
+ *
+ * Listing every captured enquiry under "Customers" made the word meaningless —
+ * the count on that screen was really "people in the CRM", which nobody needs
+ * a dedicated page for. `customers` is the segment backed by a live booking;
+ * `contacts` is the full address book, one click away, so nothing is hidden.
+ */
+export type CustomerSegment = "customers" | "contacts";
+
+export function normalizeCustomerSegment(value?: string): CustomerSegment {
+  return value === "contacts" ? "contacts" : "customers";
+}
+
+/** A cancelled booking un-makes the customer, the same way it un-books the unit. */
+const hasLiveBooking = sql`EXISTS (
+  SELECT 1 FROM bookings bk
+  WHERE bk.org_id = p.org_id AND bk.person_id = p.id AND bk.status <> 'cancelled'
+)`;
+
 export interface CustomerListFilters {
   ownerId?: string;
   search?: string;
+  segment?: CustomerSegment;
   limit?: number;
   offset?: number;
 }
@@ -325,6 +347,7 @@ export async function listCustomers(
     sql`p.org_id = ${orgId}`,
     sql`p.merged_into_person_id IS NULL`,
   ];
+  if ((filters.segment ?? "customers") === "customers") conditions.push(hasLiveBooking);
   if (filters.ownerId) {
     conditions.push(sql`EXISTS (
       SELECT 1 FROM leads owned
@@ -357,6 +380,10 @@ export async function listCustomers(
            COUNT(DISTINCT l.id) FILTER (
              WHERE l.stage NOT IN ('booked', 'lost', 'disqualified')
            )::int AS "openOpportunityCount",
+           (
+             SELECT COUNT(*)::int FROM bookings bk
+             WHERE bk.org_id = p.org_id AND bk.person_id = p.id AND bk.status <> 'cancelled'
+           ) AS "bookingCount",
            STRING_AGG(DISTINCT pr.name, ', ' ORDER BY pr.name) AS "projectNames",
            STRING_AGG(DISTINCT u.name, ', ' ORDER BY u.name) AS "ownerNames",
            MAX(COALESCE(l.last_activity_at, l.updated_at, p.updated_at)) AS "lastActivityAt",

@@ -59,6 +59,9 @@ export async function middleware(request: NextRequest) {
   const isPublic =
     path.startsWith("/login") ||
     path.startsWith("/auth") ||
+    // Passcode-gated public walk-in forms. A visitor at a site gate has no
+    // account, so a session redirect here would simply lose the enquiry.
+    path.startsWith("/w/") ||
     path === "/health" ||
     path === "/sw.js" ||
     path === "/manifest.webmanifest" ||

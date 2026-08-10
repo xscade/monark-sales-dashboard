@@ -112,7 +112,7 @@ export default async function OverviewPage() {
           )}
           {can(user, "leads:write") && (
             <Button asChild>
-              <Link href="/leads/new"><Plus />Add lead</Link>
+              <Link href="/walk-ins/new"><Plus />Add lead</Link>
             </Button>
           )}
         </div>

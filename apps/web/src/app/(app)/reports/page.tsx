@@ -2,6 +2,8 @@ import Link from "next/link";
 import { Card, DataTable, EmptyState, SourceBadge, StatTile, Td, Th } from "@/components/ui";
 import { requirePermission } from "@/lib/auth";
 import { getCommercialReports, listCommercialProjects } from "@/lib/commercial-queries";
+import { getWalkInLinkPerformance } from "@/lib/walk-in-link-queries";
+import { WALK_IN_LINK_TYPE_LABELS } from "@/lib/walk-in-links";
 import { formatINR, formatNumber, formatPercent } from "@/lib/format";
 
 export const dynamic = "force-dynamic";
@@ -18,9 +20,10 @@ export default async function ReportsPage({
   const params = await searchParams;
   const days = Math.max(1, Math.min(Number(params.days) || 90, 730));
   const projectId = params.project?.trim() || undefined;
-  const [projects, report] = await Promise.all([
+  const [projects, report, channels] = await Promise.all([
     listCommercialProjects(user.orgId),
     getCommercialReports(user.orgId, { days, projectId }),
+    getWalkInLinkPerformance(user.orgId),
   ]);
 
   const funnelRows = [
@@ -258,10 +261,66 @@ export default async function ReportsPage({
         )}
       </Card>
 
+      <Card
+        title="Walk-in channels"
+        subtitle="Public link performance, carried from the QR or WhatsApp forward all the way to agreement value."
+        action={
+          <Link href="/walk-ins/links" className="text-sm font-medium text-brand-600 hover:underline">
+            Manage links
+          </Link>
+        }
+      >
+        {channels.length === 0 ? (
+          <EmptyState
+            title="No channel links yet"
+            hint="Create a passcode-gated walk-in link per broker or site to tell these channels apart."
+          />
+        ) : (
+          <DataTable>
+            <thead className="border-b border-zinc-100 dark:border-zinc-800">
+              <tr>
+                <Th>Channel</Th>
+                <Th>Type</Th>
+                <Th className="text-right">Opens</Th>
+                <Th className="text-right">Check-ins</Th>
+                <Th className="text-right">Leads</Th>
+                <Th className="text-right">Site visits</Th>
+                <Th className="text-right">Bookings</Th>
+                <Th className="text-right">Agreement</Th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-zinc-100 dark:divide-zinc-800">
+              {channels.map((channel) => (
+                <tr key={channel.id}>
+                  <Td>
+                    <p className="font-medium">{channel.label}</p>
+                    <p className="text-xs text-zinc-500">
+                      {channel.contactName ?? "—"}
+                      {channel.projectName ? ` · ${channel.projectName}` : ""}
+                      {channel.isActive ? "" : " · paused"}
+                    </p>
+                  </Td>
+                  <Td className="text-zinc-600 dark:text-zinc-400">
+                    {WALK_IN_LINK_TYPE_LABELS[channel.linkType]}
+                  </Td>
+                  <Td className="tabular text-right">{formatNumber(channel.viewCount)}</Td>
+                  <Td className="tabular text-right">{formatNumber(channel.submissionCount)}</Td>
+                  <Td className="tabular text-right">{formatNumber(channel.leadCount)}</Td>
+                  <Td className="tabular text-right">{formatNumber(channel.siteVisitCount)}</Td>
+                  <Td className="tabular text-right font-medium">{formatNumber(channel.bookedCount)}</Td>
+                  <Td className="tabular text-right">{formatINR(channel.bookedValue, true)}</Td>
+                </tr>
+              ))}
+            </tbody>
+          </DataTable>
+        )}
+      </Card>
+
       <p className="text-xs text-zinc-500">
         Funnel stages are a history ledger, but visits, bookings, and collections are counted only
         from their operational tables. This keeps commercial reports intact even when salespeople
-        skip or manually correct a stage.
+        skip or manually correct a stage. Channel figures ignore the date filter — a link is judged
+        over its whole life, not a rolling window.
       </p>
     </div>
   );

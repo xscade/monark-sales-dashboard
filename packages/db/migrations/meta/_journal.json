@@ -29,6 +29,13 @@
       "when": 1786355144501,
       "tag": "0003_api_key_hardening",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1786372238883,
+      "tag": "0004_huge_killmonger",
+      "breakpoints": true
     }
   ]
 }

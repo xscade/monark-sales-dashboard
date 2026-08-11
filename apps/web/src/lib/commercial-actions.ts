@@ -10,6 +10,7 @@ import { redirect } from "next/navigation";
 import { z } from "zod";
 import { requirePermission } from "./auth";
 import { localDateTimeSchema, parseLocalDateTime } from "./datetime";
+import { publishChange } from "./realtime";
 
 const unitStatusSchema = z.enum([
   "available",
@@ -171,8 +172,15 @@ function revalidateCommercial(leadId?: string, bookingId?: string) {
   revalidatePath("/reports");
   revalidatePath("/pipeline");
   revalidatePath("/leads");
+  revalidatePath("/accounts");
   if (leadId) revalidatePath(`/leads/${leadId}`);
   if (bookingId) revalidatePath(`/bookings/${bookingId}`);
+}
+
+/** Revalidate this request's caches, then tell every other open board. */
+async function announceCommercial(orgId: string, leadId?: string, bookingId?: string) {
+  revalidateCommercial(leadId, bookingId);
+  await publishChange(orgId, "bookings");
 }
 
 async function assertProject(tx: Tx, orgId: string, projectId: string): Promise<void> {
@@ -470,7 +478,7 @@ export async function createUnitAction(formData: FormData) {
     });
   });
 
-  revalidateCommercial();
+  await announceCommercial(user.orgId);
 }
 
 export async function updateUnitAction(formData: FormData) {
@@ -499,7 +507,7 @@ export async function updateUnitAction(formData: FormData) {
     });
   });
 
-  revalidateCommercial();
+  await announceCommercial(user.orgId);
 }
 
 export async function setUnitStatusAction(formData: FormData) {
@@ -550,7 +558,7 @@ export async function setUnitStatusAction(formData: FormData) {
     });
   });
 
-  revalidateCommercial();
+  await announceCommercial(user.orgId);
 }
 
 /**
@@ -607,7 +615,7 @@ export async function deleteUnitAction(formData: FormData) {
     });
   });
 
-  revalidateCommercial();
+  await announceCommercial(user.orgId);
 }
 
 export async function holdUnitAction(formData: FormData) {
@@ -668,7 +676,7 @@ export async function holdUnitAction(formData: FormData) {
     });
   });
 
-  revalidateCommercial(input.leadId);
+  await announceCommercial(user.orgId, input.leadId);
 }
 
 export async function releaseUnitHoldAction(formData: FormData) {
@@ -734,7 +742,7 @@ export async function releaseUnitHoldAction(formData: FormData) {
     });
   });
 
-  revalidateCommercial(leadId);
+  await announceCommercial(user.orgId, leadId);
 }
 
 export async function createBookingAction(formData: FormData) {
@@ -844,7 +852,7 @@ export async function createBookingAction(formData: FormData) {
     });
   });
 
-  revalidateCommercial(input.leadId, bookingId);
+  await announceCommercial(user.orgId, input.leadId, bookingId);
   redirect(`/bookings/${bookingId}`);
 }
 
@@ -978,7 +986,7 @@ export async function recordPaymentAction(formData: FormData) {
     });
   });
 
-  revalidateCommercial(leadId, input.bookingId);
+  await announceCommercial(user.orgId, leadId, input.bookingId);
 }
 
 export async function advanceBookingAction(formData: FormData) {
@@ -1065,7 +1073,7 @@ export async function advanceBookingAction(formData: FormData) {
     });
   });
 
-  revalidateCommercial(leadId, input.bookingId);
+  await announceCommercial(user.orgId, leadId, input.bookingId);
 }
 
 export async function cancelBookingAction(formData: FormData) {
@@ -1141,5 +1149,5 @@ export async function cancelBookingAction(formData: FormData) {
     });
   });
 
-  revalidateCommercial(leadId, input.bookingId);
+  await announceCommercial(user.orgId, leadId, input.bookingId);
 }

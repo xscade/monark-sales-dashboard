@@ -7,6 +7,7 @@ import { and, eq, inArray } from "drizzle-orm";
 import { redirect } from "next/navigation";
 import { z } from "zod";
 import { can, requirePermission } from "./auth";
+import { publishChange } from "./realtime";
 import { localDateTimeSchema, parseLocalDateTime } from "./datetime";
 import { lockLeadForUpdate } from "./lead-lock";
 
@@ -195,6 +196,8 @@ export async function createManualLead(
     return { ok: false, message: "The lead could not be saved. Please try again." };
   }
 
+  // Before the redirect: `redirect()` works by throwing.
+  await publishChange(user.orgId, "leads");
   redirect(`/leads/${leadId}?created=1`);
 }
 
@@ -521,6 +524,7 @@ export async function createFreshWalkIn(
     return { ok: false, message: "The walk-in could not be saved. The form is still here—please try again." };
   }
 
+  await publishChange(user.orgId, "leads");
   if (formData.get("offlineSync") === "true") {
     return { ok: true, message: "Offline walk-in synced", leadId };
   }

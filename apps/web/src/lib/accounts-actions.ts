@@ -7,6 +7,7 @@ import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { z } from "zod";
 import { requirePermission } from "./auth";
+import { publishChange } from "./realtime";
 
 const verifySchema = z
   .object({
@@ -153,6 +154,7 @@ export async function verifyBookingAction(formData: FormData): Promise<void> {
   revalidatePath("/reports");
   revalidatePath("/customers");
   revalidatePath("/");
+  await publishChange(actor.orgId, "accounts");
   redirect(
     withFlash(
       returnTo,

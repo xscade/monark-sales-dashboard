@@ -8,6 +8,7 @@ import { revalidatePath } from "next/cache";
 import { cookies } from "next/headers";
 import { z } from "zod";
 import { requirePermission } from "./auth";
+import { publishChange } from "./realtime";
 import {
   WALK_IN_LINK_EXTRA_FIELDS,
   WALK_IN_LINK_SOURCE,
@@ -415,7 +416,19 @@ export async function submitPublicWalkIn(
         walkInLinkId: link.id,
       });
 
-      const shouldAdvance = ["new", "contacted", "qualified", "visit_scheduled"].includes(lead.stage);
+      // A self-service check-in is evidence the person stood on the site. It is
+      // not evidence anybody sold to them: no salesperson has spoken to this
+      // visitor, they filled in a form on a tablet by themselves.
+      //
+      // Advancing a brand-new lead straight to `visited` therefore skipped the
+      // columns the team actually works and made the hottest lead in the
+      // building — somebody who drove to the site unprompted — look already
+      // handled. It stays in `new` and the board carries the visit as a chip,
+      // so it reads as "call this person" rather than "done".
+      //
+      // A lead already in conversation is different: for them the visit is a
+      // genuine funnel step, so those still advance.
+      const shouldAdvance = ["contacted", "qualified", "visit_scheduled"].includes(lead.stage);
       if (shouldAdvance) {
         await tx.insert(leadStageHistory).values({
           id: randomUUID(),
@@ -525,5 +538,9 @@ export async function submitPublicWalkIn(
 
   revalidatePath("/walk-ins");
   revalidatePath("/reports");
+  // The visitor is standing at the site right now. This is the single most
+  // time-critical signal the CRM produces, so the team's boards learn about it
+  // without anyone reloading.
+  await publishChange(link.orgId, "leads");
   return { ok: true, message: "Thank you — you are checked in. The team has your details." };
 }

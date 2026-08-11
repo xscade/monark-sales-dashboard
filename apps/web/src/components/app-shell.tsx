@@ -42,6 +42,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet";
+import { RealtimeRefresh } from "@/components/realtime-refresh";
 import { cn } from "@/lib/utils";
 
 export interface ShellNavItem {
@@ -61,6 +62,7 @@ interface AppShellProps {
     email: string;
     role: string;
     orgName: string;
+    orgId: string;
   };
   sections: ShellNavSection[];
   quickActions: ShellNavItem[];
@@ -272,6 +274,8 @@ export function AppShell({ children, user, sections, quickActions, signOutAction
                 <Link href={quickActions[0].href} aria-label={quickActions[0].label}><Plus /></Link>
               </Button>
             )}
+
+            <RealtimeRefresh orgId={user.orgId} />
 
             <ThemeToggle />
 

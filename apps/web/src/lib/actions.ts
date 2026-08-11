@@ -15,6 +15,7 @@ import { and, eq, isNull, sql } from "drizzle-orm";
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
 import { requirePermission, type SessionUser } from "./auth";
+import { publishChange } from "./realtime";
 import { localDateTimeSchema, parseLocalDateTime } from "./datetime";
 import { insertFollowUpTask, type FollowUpDraft } from "./follow-up-sync";
 import { FOLLOW_UP_CHANNELS } from "./follow-ups";
@@ -323,6 +324,9 @@ async function applyStageChange(
   revalidatePath("/leads");
   revalidatePath("/follow-ups");
   revalidatePath("/tasks");
+  // Stage moves and the follow-ups booked with them are what the rest of the
+  // team is watching; a board showing yesterday's column is worse than useless.
+  await publishChange(user.orgId, "leads");
 }
 
 export async function changeStage(formData: FormData) {

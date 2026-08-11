@@ -417,11 +417,27 @@ export async function getPipeline(orgId: string, ownerId?: string) {
            (SELECT COUNT(*)::int FROM visits v
              WHERE v.org_id = l.org_id AND v.lead_id = l.id
                AND v.type = 'project_site' AND v.status <> 'cancelled'
-           ) AS "siteVisitCount"
+           ) AS "siteVisitCount",
+           -- A self-service check-in leaves the lead in the new stage, so the
+           -- board would otherwise show the person who drove to the site
+           -- exactly like the one who filled a web form at midnight. The most
+           -- recent arrival, and the channel it came through, ride along so the
+           -- card can say which is which.
+           arrival.arrived_at AS "arrivedAt",
+           arrival.link_label AS "arrivedVia"
     FROM leads l
     JOIN persons p ON p.id = l.person_id
     LEFT JOIN users u ON u.id = l.owner_user_id
     LEFT JOIN lead_touchpoints t ON t.id = l.first_touchpoint_id
+    LEFT JOIN LATERAL (
+      SELECT v.arrived_at, wl.label AS link_label
+      FROM visits v
+      LEFT JOIN walk_in_links wl ON wl.id = v.walk_in_link_id AND wl.org_id = v.org_id
+      WHERE v.org_id = l.org_id AND v.lead_id = l.id
+        AND v.arrived_at IS NOT NULL AND v.status <> 'cancelled'
+      ORDER BY v.arrived_at DESC
+      LIMIT 1
+    ) arrival ON true
     WHERE ${sql.join(conditions, sql` AND `)}
     ORDER BY l.score DESC, l.created_at DESC
     LIMIT 400
@@ -429,6 +445,8 @@ export async function getPipeline(orgId: string, ownerId?: string) {
   return result.rows as unknown as (LeadRow & {
     attributionExpiresAt: string | null;
     siteVisitCount: number;
+    arrivedAt: string | null;
+    arrivedVia: string | null;
   })[];
 }
 

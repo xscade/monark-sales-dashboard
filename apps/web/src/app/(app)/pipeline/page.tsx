@@ -44,6 +44,8 @@ export default async function PipelinePage({
     attributionExpiresAt: lead.attributionExpiresAt,
     nextFollowUpAt: lead.nextFollowUpAt,
     siteVisitCount: lead.siteVisitCount,
+    arrivedAt: lead.arrivedAt,
+    arrivedVia: lead.arrivedVia,
   }));
 
   return (

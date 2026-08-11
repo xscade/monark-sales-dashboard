@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useOptimistic, useRef, useState, useTransition } from "react";
 import { createPortal } from "react-dom";
-import { GripVertical } from "lucide-react";
+import { GripVertical, MapPin } from "lucide-react";
 import { toast } from "sonner";
 import { STAGE_ORDER, checkTransition, stageRank, type LeadStage } from "@monark/core/pipeline";
 import { AttributionClock } from "@/components/ui";
@@ -29,6 +29,39 @@ export interface PipelineCard {
   nextFollowUpAt: string | null;
   /** Non-cancelled project-site visits already on the books. */
   siteVisitCount: number;
+  /** Most recent arrival on site, if any. */
+  arrivedAt: string | null;
+  /** Walk-in link the arrival came through; null for a desk check-in. */
+  arrivedVia: string | null;
+}
+
+/**
+ * "This person was physically here."
+ *
+ * A self-service check-in leaves the lead in `new`, because nobody has sold to
+ * them yet — but without this the board would show somebody who drove to the
+ * site identically to somebody who filled a web form at midnight, and they are
+ * not remotely the same lead. The chip carries the channel too, so the agent
+ * picking up the phone knows whether they came off a hoarding, a broker, or the
+ * site gate.
+ *
+ * Suppressed from Visited onwards, where the column already says it.
+ */
+function ArrivalChip({ card }: { card: PipelineCard }) {
+  if (!card.arrivedAt) return null;
+  if (stageRank(card.stage as LeadStage) >= stageRank("visited")) return null;
+
+  return (
+    <p
+      title={`Checked in ${formatRelative(card.arrivedAt)}${card.arrivedVia ? ` via ${card.arrivedVia}` : ""}`}
+      className="mt-1.5 inline-flex max-w-full items-center gap-1 rounded-md bg-amber-100 px-1.5 py-0.5 text-[11px] font-medium text-amber-800 dark:bg-amber-950 dark:text-amber-300"
+    >
+      <MapPin className="size-3 shrink-0" />
+      <span className="truncate">
+        Visited site{card.arrivedVia ? ` · ${card.arrivedVia}` : ""}
+      </span>
+    </p>
+  );
 }
 
 /** Pointer travel that turns a mouse press into a drag rather than a click. */
@@ -511,6 +544,7 @@ export function PipelineBoard({
                         <p className="tabular mt-0.5 truncate text-xs text-zinc-500">
                           {maskPhoneDisplay(card.primaryPhone)}
                         </p>
+                        <ArrivalChip card={card} />
                         <div className="mt-2 flex items-center justify-between gap-2">
                           <span className="truncate text-xs text-zinc-500">
                             {card.ownerName ?? "Unassigned"}

@@ -80,6 +80,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
         email: user.email,
         role: user.role,
         orgName: user.orgName,
+        orgId: user.orgId,
       }}
       sections={sections}
       quickActions={quickActions}

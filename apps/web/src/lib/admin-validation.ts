@@ -1,16 +1,13 @@
 import { z } from "zod";
+import {
+  grantsFromTokens,
+  ROLE_TYPES,
+  USER_ROLES,
+  type AccessGrants,
+} from "./permissions";
 
-export const USER_ROLES = [
-  "owner",
-  "admin",
-  "marketing",
-  "sales_manager",
-  "sales_agent",
-  "receptionist",
-  "read_only",
-] as const;
-
-export type UserRole = (typeof USER_ROLES)[number];
+export { USER_ROLES } from "./permissions";
+export type { UserRole } from "./permissions";
 
 const optionalText = (max: number) =>
   z.preprocess(
@@ -48,6 +45,68 @@ export function parseLanguageList(value: string): string[] {
   ];
 }
 
+/**
+ * The Advanced access grid.
+ *
+ * `accessMode` decides whether the grid is consulted at all. "role" stores
+ * null, meaning "follow this role's defaults, including whatever they become
+ * later" — which is what an admin who never opened Advanced expects. "custom"
+ * freezes an explicit answer that no future change to the role table can widen.
+ */
+const accessModeSchema = z.enum(["role", "custom"]).default("role");
+
+const accessTokensSchema = z.preprocess(
+  (value) => (Array.isArray(value) ? value : value == null || value === "" ? [] : [value]),
+  z.array(z.string().max(80)).max(200),
+);
+
+const roleTypeSchema = z.preprocess(
+  (value) => (typeof value === "string" && value.trim() === "" ? null : value),
+  z.enum(ROLE_TYPES).nullable().default(null),
+);
+
+const accessFields = {
+  accessMode: accessModeSchema,
+  access: accessTokensSchema,
+  roleType: roleTypeSchema,
+};
+
+function languageIssues(
+  value: { languages: string[] },
+  context: z.RefinementCtx,
+): void {
+  for (const language of value.languages) {
+    if (!/^[a-z]{2,3}(?:-[a-z]{2})?$/.test(language)) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["languages"],
+        message: `Invalid language tag: ${language}`,
+      });
+    }
+  }
+  if (value.languages.length > 10) {
+    context.addIssue({
+      code: z.ZodIssueCode.too_big,
+      maximum: 10,
+      inclusive: true,
+      type: "array",
+      path: ["languages"],
+      message: "Choose at most 10 languages",
+    });
+  }
+}
+
+/** Collapse the submitted grid into what actually gets stored. */
+function withResolvedAccess<T extends { accessMode: "role" | "custom"; access: string[] }>(
+  value: T,
+): Omit<T, "accessMode" | "access"> & { permissions: AccessGrants | null } {
+  const { accessMode, access, ...rest } = value;
+  return {
+    ...rest,
+    permissions: accessMode === "custom" ? grantsFromTokens(access) : null,
+  };
+}
+
 export const updateUserSchema = z
   .object({
     id: z.string().uuid(),
@@ -56,28 +115,10 @@ export const updateUserSchema = z
     role: z.enum(USER_ROLES),
     languages: z.string().max(200).transform(parseLanguageList),
     leadCapacity: z.coerce.number().int().min(1).max(10_000),
+    ...accessFields,
   })
-  .superRefine((value, context) => {
-    for (const language of value.languages) {
-      if (!/^[a-z]{2,3}(?:-[a-z]{2})?$/.test(language)) {
-        context.addIssue({
-          code: z.ZodIssueCode.custom,
-          path: ["languages"],
-          message: `Invalid language tag: ${language}`,
-        });
-      }
-    }
-    if (value.languages.length > 10) {
-      context.addIssue({
-        code: z.ZodIssueCode.too_big,
-        maximum: 10,
-        inclusive: true,
-        type: "array",
-        path: ["languages"],
-        message: "Choose at most 10 languages",
-      });
-    }
-  });
+  .superRefine(languageIssues)
+  .transform(withResolvedAccess);
 
 export const inviteUserSchema = z
   .object({
@@ -87,17 +128,10 @@ export const inviteUserSchema = z
     role: z.enum(USER_ROLES),
     languages: z.string().max(200).transform(parseLanguageList),
     leadCapacity: z.coerce.number().int().min(1).max(10_000),
+    ...accessFields,
   })
-  .superRefine((value, context) => {
-    for (const language of value.languages) {
-      if (!/^[a-z]{2,3}(?:-[a-z]{2})?$/.test(language)) {
-        context.addIssue({ code: z.ZodIssueCode.custom, path: ["languages"], message: `Invalid language tag: ${language}` });
-      }
-    }
-    if (value.languages.length > 10) {
-      context.addIssue({ code: z.ZodIssueCode.too_big, maximum: 10, inclusive: true, type: "array", path: ["languages"], message: "Choose at most 10 languages" });
-    }
-  });
+  .superRefine(languageIssues)
+  .transform(withResolvedAccess);
 
 export const setUserActiveSchema = z.object({
   id: z.string().uuid(),

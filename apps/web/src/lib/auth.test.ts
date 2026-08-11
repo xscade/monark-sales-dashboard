@@ -38,6 +38,8 @@ vi.mock("@monark/db", () => ({
     email: "users.email",
     name: "users.name",
     role: "users.role",
+    roleType: "users.role_type",
+    permissions: "users.permissions",
     isActive: "users.is_active",
   },
   orgs: {
@@ -95,11 +97,37 @@ describe("requireUser", () => {
       email: "sales@monarkrealcon.com",
       name: "Monark Sales",
       role: "owner" as const,
+      roleType: null,
+      permissions: null,
     };
     mockCrmRows([row]);
 
     await expect(requireUser()).resolves.toEqual(row);
     expect(mocks.eq).toHaveBeenCalledWith("users.email", "sales@monarkrealcon.com");
     expect(mocks.eq).toHaveBeenCalledWith("users.is_active", true);
+  });
+
+  it("drops stored grants for modules that no longer exist", async () => {
+    mocks.getUser.mockResolvedValue({
+      data: { user: { id: "auth-user", email: "accounts@monarkrealcon.com" } },
+    });
+    mockCrmRows([
+      {
+        id: "crm-user",
+        orgId: "monark-org",
+        orgName: "Monark",
+        timezone: "Asia/Kolkata",
+        email: "accounts@monarkrealcon.com",
+        name: "Monark Accounts",
+        role: "read_only",
+        roleType: "accountant",
+        permissions: { accounts: ["read", "update"], retired_module: ["read"] },
+      },
+    ]);
+
+    await expect(requireUser()).resolves.toMatchObject({
+      roleType: "accountant",
+      permissions: { accounts: ["read", "update"] },
+    });
   });
 });

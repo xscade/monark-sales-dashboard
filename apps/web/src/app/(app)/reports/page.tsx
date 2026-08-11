@@ -1,11 +1,18 @@
 import Link from "next/link";
 import { Card, DataTable, EmptyState, SourceBadge, StatTile, Td, Th } from "@/components/ui";
-import { requirePermission } from "@/lib/auth";
+import { can, requirePermission } from "@/lib/auth";
 import { getCashMovement, getCommercialReports, listCommercialProjects } from "@/lib/commercial-queries";
+import {
+  getVerificationSummary,
+  getVerificationTrend,
+  listValidatedTransactions,
+} from "@/lib/accounts-queries";
 import { CashMovementChart } from "@/components/cash-movement-chart";
+import { VerificationChart } from "@/components/verification-chart";
+import { BookingStatusBadge } from "@/components/booking-status";
 import { getWalkInLinkPerformance } from "@/lib/walk-in-link-queries";
 import { WALK_IN_LINK_TYPE_LABELS } from "@/lib/walk-in-links";
-import { formatINR, formatNumber, formatPercent } from "@/lib/format";
+import { formatDateTime, formatINR, formatNumber, formatPercent } from "@/lib/format";
 
 export const dynamic = "force-dynamic";
 
@@ -21,13 +28,29 @@ export default async function ReportsPage({
   const params = await searchParams;
   const days = Math.max(1, Math.min(Number(params.days) || 90, 730));
   const projectId = params.project?.trim() || undefined;
-  const [projects, report, channels, cashMovement] = await Promise.all([
+  const [
+    projects,
+    report,
+    channels,
+    cashMovement,
+    verification,
+    verificationTrend,
+    validatedTransactions,
+  ] = await Promise.all([
     listCommercialProjects(user.orgId),
     getCommercialReports(user.orgId, { days, projectId }),
     getWalkInLinkPerformance(user.orgId),
     getCashMovement(user.orgId, { days, projectId }),
+    getVerificationSummary(user.orgId, { projectId }),
+    getVerificationTrend(user.orgId, { days, projectId }),
+    listValidatedTransactions(user.orgId, { days, projectId, limit: 50 }),
   ]);
   const refundedTotal = cashMovement.reduce((sum, point) => sum + point.refunded, 0);
+  const bookingsAwaitingVerification = verification.pending + verification.noMatch;
+  const verifiedShare =
+    verification.validated + bookingsAwaitingVerification > 0
+      ? verification.validated / (verification.validated + bookingsAwaitingVerification)
+      : 0;
 
   const funnelRows = [
     { label: "Leads created", value: report.funnel.leads },
@@ -120,6 +143,121 @@ export default async function ReportsPage({
           <StatTile label="Outstanding now" value={formatINR(report.bookings.outstanding, true)} tone="warn" />
         </div>
       </section>
+
+      {/* Every figure above is what the register claims. This section is the
+          subset a second pair of eyes has checked against the bank — kept
+          apart rather than folded in, because a revenue number nobody has
+          verified and one that finance has signed off are not the same claim
+          and should never be totalled together. */}
+      <section>
+        <div className="mb-3 flex flex-wrap items-end justify-between gap-2">
+          <div>
+            <h2 className="text-sm font-semibold">Validated transactions</h2>
+            <p className="text-xs text-zinc-500">
+              Booking amounts accounts has matched against the bank, separated from the rest.
+            </p>
+          </div>
+          {can(user, "accounts:read") && (
+            <Link href="/accounts" className="text-sm font-medium text-brand-600 hover:underline">
+              Open verification queue
+            </Link>
+          )}
+        </div>
+        <div className="grid grid-cols-2 gap-3 lg:grid-cols-5">
+          <StatTile
+            label="Validated bookings"
+            value={formatNumber(verification.validated)}
+            hint={`${formatPercent(verifiedShare, 0)} of live bookings`}
+            tone="good"
+          />
+          <StatTile
+            label="Validated value"
+            value={formatINR(verification.validatedValue, true)}
+            hint="Confirmed against the bank"
+            tone="good"
+          />
+          <StatTile
+            label="Awaiting verification"
+            value={formatNumber(verification.pending)}
+            hint={formatINR(verification.pendingValue, true)}
+            tone={verification.pending ? "warn" : "default"}
+          />
+          <StatTile
+            label="No match"
+            value={formatNumber(verification.noMatch)}
+            hint={formatINR(verification.noMatchValue, true)}
+            tone={verification.noMatch ? "danger" : "default"}
+          />
+          <StatTile
+            label="Re-check needed"
+            value={formatNumber(verification.drifted)}
+            hint={`${formatINR(verification.driftedValue, true)} received since sign-off`}
+            tone={verification.drifted ? "warn" : "default"}
+          />
+        </div>
+      </section>
+
+      <Card
+        title="Verification coverage"
+        subtitle="Booked value per period, split by whether accounts has confirmed it. The line is the verified share — a taller column with the same ratio is more money nobody has checked."
+      >
+        <div className="px-3 pb-4 pt-2 sm:px-5">
+          <VerificationChart data={verificationTrend} />
+        </div>
+      </Card>
+
+      <Card
+        title={`${validatedTransactions.length} validated in the last ${days} days`}
+        subtitle="Each row is a decision by a named person against a named amount."
+      >
+        {validatedTransactions.length === 0 ? (
+          <EmptyState
+            title="No validated transactions in this period"
+            hint="Bookings are validated from the Accounts queue once the receipt is traced in the bank."
+          />
+        ) : (
+          <DataTable>
+            <thead className="border-b border-zinc-100 dark:border-zinc-800">
+              <tr>
+                <Th>Booking</Th>
+                <Th>Buyer</Th>
+                <Th>Project / unit</Th>
+                <Th className="text-right">Agreement</Th>
+                <Th className="text-right">Validated amount</Th>
+                <Th>Validated by</Th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-zinc-100 dark:divide-zinc-800">
+              {validatedTransactions.map((row) => (
+                <tr key={row.id} className="hover:bg-zinc-50 dark:hover:bg-zinc-800/40">
+                  <Td>
+                    <Link
+                      href={`/bookings/${row.id}`}
+                      className="font-medium text-brand-600 hover:underline"
+                    >
+                      {row.reference}
+                    </Link>
+                    <div className="mt-1"><BookingStatusBadge status={row.status} /></div>
+                  </Td>
+                  <Td>{row.personName ?? "Unnamed"}</Td>
+                  <Td>
+                    <p>{row.projectName ?? "—"}</p>
+                    <p className="mt-0.5 text-xs text-zinc-500">{row.unitLabel ?? "—"}</p>
+                  </Td>
+                  <Td className="tabular text-right">{formatINR(row.agreementValue, true)}</Td>
+                  <Td className="tabular text-right font-medium text-emerald-700 dark:text-emerald-400">
+                    {formatINR(row.verifiedAmount, true)}
+                  </Td>
+                  <Td className="whitespace-nowrap text-zinc-500">
+                    {row.verifiedByName ?? "—"}
+                    <span className="block text-xs">{formatDateTime(row.verifiedAt)}</span>
+                  </Td>
+                </tr>
+              ))}
+            </tbody>
+          </DataTable>
+        )}
+      </Card>
 
       <div className="grid gap-5 lg:grid-cols-[420px_1fr]">
         <Card title="Ground-truth funnel" subtitle={`Lead cohort created in the last ${days} days.`}>
@@ -333,6 +471,8 @@ export default async function ReportsPage({
       </Card>
 
       <p className="text-xs text-zinc-500">
+        Booking totals elsewhere on this page are what the register recorded; the validated figures
+        are the subset accounts has separately confirmed, and the two are never added together.
         Funnel stages are a history ledger, but visits, bookings, and collections are counted only
         from their operational tables. This keeps commercial reports intact even when salespeople
         skip or manually correct a stage. Channel figures ignore the date filter — a link is judged

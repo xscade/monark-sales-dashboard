@@ -7,6 +7,7 @@ import { motion } from "motion/react";
 import {
   Activity,
   AlarmClock,
+  BadgeIndianRupee,
   BarChart3,
   BookOpenCheck,
   Boxes,
@@ -78,6 +79,7 @@ const ICONS: Record<string, LucideIcon> = {
   "/site-visits": Building2,
   "/inventory": Boxes,
   "/bookings": BookOpenCheck,
+  "/accounts": BadgeIndianRupee,
   "/campaigns": BarChart3,
   "/conversions": Activity,
   "/reports": Gauge,
@@ -254,7 +256,11 @@ export function AppShell({ children, user, sections, quickActions, signOutAction
               {quickActions.slice(0, 2).map((item, index) => (
                 <Button key={item.href} asChild variant={index === 0 ? "default" : "outline"} size="sm">
                   <Link href={item.href}>
-                    {index === 0 ? <Plus /> : <Building2 />}
+                    {/* Both are create actions, so both lead with the plus; the
+                        second keeps its own icon so the two stay tellable
+                        apart at a glance. */}
+                    <Plus />
+                    {index === 0 ? null : <Building2 />}
                     {item.label}
                   </Link>
                 </Button>

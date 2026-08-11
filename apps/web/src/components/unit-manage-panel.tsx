@@ -45,9 +45,13 @@ export interface HoldableLead {
 export function UnitManagePanel({
   unit,
   leads,
+  mayDelete = true,
 }: {
   unit: ManageableUnit;
   leads: HoldableLead[];
+  /** Deleting stock is the narrow `inventory:delete` right, separable from the
+   *  broad write access that opens this panel. */
+  mayDelete?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const canChangeAvailability = !unit.holdId && unit.status !== "token_paid" &&
@@ -156,6 +160,7 @@ export function UnitManagePanel({
             )
           )}
 
+          {mayDelete && (
           <form
             action={deleteUnitAction}
             className="border-t border-zinc-200 pt-3 dark:border-zinc-700"
@@ -178,6 +183,7 @@ export function UnitManagePanel({
               Delete unit
             </button>
           </form>
+          )}
         </div>
       </CollapsibleContent>
     </Collapsible>

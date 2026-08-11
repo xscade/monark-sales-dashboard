@@ -12,7 +12,7 @@ import {
   uniqueIndex,
   uuid,
 } from "drizzle-orm/pg-core";
-import { userRole } from "./enums";
+import { userRole, userRoleType } from "./enums";
 
 /**
  * Multi-tenancy is present from day one even though Monark is the only tenant.
@@ -64,6 +64,18 @@ export const users = pgTable(
     name: text("name").notNull(),
     phone: text("phone"),
     role: userRole("role").notNull().default("sales_agent"),
+    /** Back-office specialisation layered on top of the base role. Null means
+     *  "sales org only" — see `userRoleType`. */
+    roleType: userRoleType("role_type"),
+    /**
+     * Per-user module grants: `{ "bookings": ["read", "create"], ... }`.
+     *
+     * NULL — not `{}` — means "this user has never been customised, use the
+     * role defaults". The distinction matters: an empty object is a real answer
+     * (an admin who deliberately revoked everything) and must not silently
+     * re-grant whatever the role happens to permit.
+     */
+    permissions: jsonb("permissions").$type<Record<string, string[]>>(),
     passwordHash: text("password_hash"),
     /** Languages the agent can sell in. Routing uses this — a Telugu-only
      *  enquiry handed to an English-only agent is a lost lead. */

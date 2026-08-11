@@ -64,6 +64,7 @@ export default async function InventoryPage({
     search: params.q?.trim() || undefined,
   };
   const mayWrite = can(user, "inventory:write");
+  const mayDelete = can(user, "inventory:delete");
   const [projects, rows, leads] = await Promise.all([
     listCommercialProjects(user.orgId),
     listInventory(user.orgId, filters),
@@ -210,6 +211,7 @@ export default async function InventoryPage({
                             fullName: lead.fullName,
                             primaryPhone: lead.primaryPhone,
                           }))}
+                          mayDelete={mayDelete}
                         />
                       </Td>
                     )}

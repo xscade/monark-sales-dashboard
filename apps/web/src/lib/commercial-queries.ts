@@ -1,5 +1,6 @@
 import { getDb } from "@monark/db";
 import { sql } from "drizzle-orm";
+import type { VerificationStatus } from "./verification";
 
 const db = () => getDb();
 
@@ -69,6 +70,12 @@ export interface BookingRow {
   tokenPaidAt: string | null;
   bookedAt: string | null;
   createdAt: string;
+  /** Finance reconciliation — see `lib/verification.ts`. */
+  verificationStatus: VerificationStatus;
+  verifiedAmount: string | null;
+  verifiedAt: string | null;
+  verifiedByName: string | null;
+  verificationNote: string | null;
 }
 
 export interface BookingPaymentRow {
@@ -229,12 +236,16 @@ export async function listBookings(
            b.agreement_value AS "agreementValue", b.token_amount AS "tokenAmount",
            COALESCE(pay.collected, 0)::text AS "collectedAmount",
            b.token_paid_at AS "tokenPaidAt", b.booked_at AS "bookedAt",
-           b.created_at AS "createdAt"
+           b.created_at AS "createdAt",
+           b.verification_status::text AS "verificationStatus",
+           b.verified_amount AS "verifiedAmount", b.verified_at AS "verifiedAt",
+           verifier.name AS "verifiedByName", b.verification_note AS "verificationNote"
     FROM bookings b
     JOIN leads l ON l.id = b.lead_id AND l.org_id = b.org_id
     JOIN persons p ON p.id = b.person_id AND p.org_id = b.org_id
     LEFT JOIN projects pr ON pr.id = b.project_id AND pr.org_id = b.org_id
     LEFT JOIN units u ON u.id = b.unit_id AND u.org_id = b.org_id
+    LEFT JOIN users verifier ON verifier.id = b.verified_by_user_id AND verifier.org_id = b.org_id
     LEFT JOIN LATERAL (
       SELECT COALESCE(SUM(
         CASE WHEN pm.is_reversed THEN 0
@@ -269,13 +280,17 @@ export async function getBookingDetail(
              b.token_paid_at AS "tokenPaidAt", b.booked_at AS "bookedAt",
              b.agreement_signed_at AS "agreementSignedAt", b.registered_at AS "registeredAt",
              b.cancelled_at AS "cancelledAt", b.cancellation_reason AS "cancellationReason",
-             closer.name AS "closedByName", b.created_at AS "createdAt"
+             closer.name AS "closedByName", b.created_at AS "createdAt",
+             b.verification_status::text AS "verificationStatus",
+             b.verified_amount AS "verifiedAmount", b.verified_at AS "verifiedAt",
+             verifier.name AS "verifiedByName", b.verification_note AS "verificationNote"
       FROM bookings b
       JOIN leads l ON l.id = b.lead_id AND l.org_id = b.org_id
       JOIN persons p ON p.id = b.person_id AND p.org_id = b.org_id
       LEFT JOIN projects pr ON pr.id = b.project_id AND pr.org_id = b.org_id
       LEFT JOIN units u ON u.id = b.unit_id AND u.org_id = b.org_id
       LEFT JOIN users closer ON closer.id = b.closed_by_user_id AND closer.org_id = b.org_id
+      LEFT JOIN users verifier ON verifier.id = b.verified_by_user_id AND verifier.org_id = b.org_id
       LEFT JOIN LATERAL (
         SELECT COALESCE(SUM(
           CASE WHEN pm.is_reversed THEN 0

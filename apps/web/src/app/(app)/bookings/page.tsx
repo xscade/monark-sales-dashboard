@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { BookingStatus } from "@/components/booking-status";
 import { Card, DataTable, EmptyState, Td, Th } from "@/components/ui";
 import { can, requirePermission } from "@/lib/auth";
 import {
@@ -16,24 +17,6 @@ const inputClass =
   "w-full rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm outline-none focus:border-brand-500 dark:border-zinc-700 dark:bg-zinc-950";
 
 const BOOKING_STATUSES = ["token", "booked", "agreement_signed", "registered", "cancelled"];
-
-const statusClass: Record<string, string> = {
-  token: "bg-cyan-100 text-cyan-700 dark:bg-cyan-950 dark:text-cyan-300",
-  booked: "bg-green-600 text-white",
-  agreement_signed: "bg-indigo-100 text-indigo-700 dark:bg-indigo-950 dark:text-indigo-300",
-  registered: "bg-violet-100 text-violet-700 dark:bg-violet-950 dark:text-violet-300",
-  cancelled: "bg-red-100 text-red-700 dark:bg-red-950 dark:text-red-300",
-};
-
-function BookingStatus({ status }: { status: string }) {
-  return (
-    <span
-      className={`inline-flex whitespace-nowrap rounded-md px-2 py-0.5 text-xs font-medium ${statusClass[status] ?? "bg-zinc-100 text-zinc-700"}`}
-    >
-      {status.replace(/_/g, " ")}
-    </span>
-  );
-}
 
 export default async function BookingsPage({
   searchParams,
@@ -127,7 +110,10 @@ export default async function BookingsPage({
         </Card>
       )}
 
-      <Card title={`${bookings.length} bookings`} subtitle="Net collected subtracts refunds and ignores reversed payments.">
+      <Card
+        title={`${bookings.length} bookings`}
+        subtitle="Net collected subtracts refunds and ignores reversed payments. A Validated tick means accounts has matched the amount against the bank."
+      >
         {bookings.length === 0 ? (
           <EmptyState title="No matching bookings" hint="The register never infers bookings from lead stage alone." />
         ) : (
@@ -164,7 +150,7 @@ export default async function BookingsPage({
                     <p>{booking.projectName ?? "—"}</p>
                     <p className="mt-0.5 text-xs text-zinc-500">{booking.unitLabel ?? "—"}</p>
                   </Td>
-                  <Td><BookingStatus status={booking.status} /></Td>
+                  <Td><BookingStatus status={booking.status} view={booking} /></Td>
                   <Td className="tabular text-right">{formatINR(booking.agreementValue, true)}</Td>
                   <Td className="tabular text-right font-medium">{formatINR(booking.collectedAmount, true)}</Td>
                   <Td className="whitespace-nowrap text-zinc-500">

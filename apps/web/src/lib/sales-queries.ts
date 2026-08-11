@@ -305,6 +305,10 @@ export interface CustomerListRow {
   opportunityCount: number;
   openOpportunityCount: number;
   bookingCount: number;
+  /** Live bookings accounts has matched against the bank. A customer whose
+   *  money is confirmed is a different proposition from one whose is not, and
+   *  the address book is exactly where that distinction gets forgotten. */
+  validatedBookingCount: number;
   /** The opportunity the row's actions operate on: the most recently active
    *  open one, so Promote/Disqualify act on the live deal rather than a
    *  closed-out enquiry from last year. */
@@ -413,6 +417,11 @@ export async function listCustomers(
              SELECT COUNT(*)::int FROM bookings bk
              WHERE bk.org_id = p.org_id AND bk.person_id = p.id AND bk.status <> 'cancelled'
            ) AS "bookingCount",
+           (
+             SELECT COUNT(*)::int FROM bookings bk
+             WHERE bk.org_id = p.org_id AND bk.person_id = p.id AND bk.status <> 'cancelled'
+               AND bk.verification_status = 'validated'
+           ) AS "validatedBookingCount",
            primary_lead.id AS "primaryLeadId",
            primary_lead.stage::text AS "primaryStage",
            STRING_AGG(DISTINCT pr.name, ', ' ORDER BY pr.name) AS "projectNames",

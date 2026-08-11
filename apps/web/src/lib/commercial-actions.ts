@@ -562,7 +562,9 @@ export async function setUnitStatusAction(formData: FormData) {
  * vanished unit turns a report into a lie rather than an error.
  */
 export async function deleteUnitAction(formData: FormData) {
-  const user = await requirePermission("inventory:write");
+  // The narrow delete right, not the broad write one: an admin can hand out
+  // "maintain the price list" without also handing out "remove stock".
+  const user = await requirePermission("inventory:delete");
   const input = z
     .object({ unitId: z.string().uuid() })
     .parse(Object.fromEntries(formData));
@@ -1067,7 +1069,8 @@ export async function advanceBookingAction(formData: FormData) {
 }
 
 export async function cancelBookingAction(formData: FormData) {
-  const user = await requirePermission("bookings:write");
+  // Unwinding a sale is separable from recording one; see `deleteUnitAction`.
+  const user = await requirePermission("bookings:delete");
   const input = z
     .object({
       bookingId: z.string().uuid(),

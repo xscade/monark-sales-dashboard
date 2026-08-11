@@ -125,18 +125,36 @@ export default async function OverviewPage() {
             overdue toggle — the visitor arrived having already asked that
             question, and the answer should not be three clicks away. */}
         <Metric label="Overdue follow-ups" value={formatNumber(stats.overdue ?? 0)} detail="Due before the current time" href="/follow-ups?from=overview" icon={ShieldAlert} tone={(stats.overdue ?? 0) > 0 ? "danger" : "good"} />
-        <Metric label="Bookings · 30d" value={formatNumber(stats.bookings30d ?? 0)} detail="Confirmed commercial outcomes" href="/bookings" icon={IndianRupee} tone="good" />
+        {/* The detail line carries the verification split rather than spending
+            a fifth tile on it: "8 bookings" and "8 bookings, 2 of which
+            accounts has actually seen the money for" are the same headline
+            with very different meanings. */}
+        <Metric
+          label="Bookings · 30d"
+          value={formatNumber(stats.bookings30d ?? 0)}
+          detail={
+            (stats.bookings30d ?? 0) > 0
+              ? `${formatNumber(stats.validatedBookings30d ?? 0)} validated by accounts`
+              : "Confirmed commercial outcomes"
+          }
+          href="/bookings"
+          icon={IndianRupee}
+          tone="good"
+        />
       </section>
 
       <section className="grid gap-5 xl:grid-cols-[minmax(0,1.65fr)_minmax(320px,.7fr)]">
         <Card className="gap-3 overflow-hidden py-0 shadow-sm">
           <CardHeader className="border-b py-5">
             <CardTitle className="text-base">Acquisition to outcome</CardTitle>
-            <CardDescription>Daily lead capture, completed visits and bookings</CardDescription>
+            <CardDescription>
+              Daily lead capture, completed visits, bookings and the share accounts has validated
+            </CardDescription>
             <CardAction className="flex items-center gap-3 text-[11px] text-muted-foreground">
               <span className="flex items-center gap-1.5"><i className="size-2 rounded-full bg-[#168f67]" />Leads</span>
               <span className="hidden items-center gap-1.5 sm:flex"><i className="size-2 rounded-full bg-[#d99d2a]" />Visits</span>
               <span className="hidden items-center gap-1.5 sm:flex"><i className="size-2 rounded-full bg-[#4679d8]" />Bookings</span>
+              <span className="hidden items-center gap-1.5 sm:flex"><i className="h-0.5 w-3 rounded-full bg-[#0f9d6b]" />Validated</span>
             </CardAction>
           </CardHeader>
           <CardContent className="px-2 pb-4 pt-3 sm:px-5">

@@ -10,7 +10,13 @@ import {
   uniqueIndex,
   uuid,
 } from "drizzle-orm/pg-core";
-import { unitStatus, visitStatus, visitType, walkInLinkType } from "./enums";
+import {
+  bookingVerificationStatus,
+  unitStatus,
+  visitStatus,
+  visitType,
+  walkInLinkType,
+} from "./enums";
 import { orgs, projects, users } from "./org";
 import { leads } from "./leads";
 import { persons } from "./identity";
@@ -270,6 +276,32 @@ export const bookings = pgTable(
     closedByUserId: uuid("closed_by_user_id").references(() => users.id, {
       onDelete: "set null",
     }),
+
+    /**
+     * Finance reconciliation, separate from the sales milestone in `status`.
+     *
+     * Sales says the flat is booked; accounts says the money is in the bank.
+     * Those are different claims and conflating them is how a register ends up
+     * reporting revenue nobody received.
+     */
+    verificationStatus: bookingVerificationStatus("verification_status")
+      .notNull()
+      .default("pending"),
+    verifiedByUserId: uuid("verified_by_user_id").references(() => users.id, {
+      onDelete: "set null",
+    }),
+    verifiedAt: timestamp("verified_at", { withTimezone: true }),
+    /** Why the accountant could not match it, or what they matched against. */
+    verificationNote: text("verification_note"),
+    /**
+     * Net collected at the moment of the decision.
+     *
+     * Without this, "Validated" silently keeps covering every instalment
+     * received afterwards — which would let ₹2Cr ride on an accountant's tick
+     * against a ₹5L token. The queue re-raises any booking whose collections
+     * have moved past this figure.
+     */
+    verifiedAmount: numeric("verified_amount", { precision: 14, scale: 2 }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
@@ -277,6 +309,7 @@ export const bookings = pgTable(
     uniqueIndex("bookings_org_reference_idx").on(t.orgId, t.reference),
     index("bookings_lead_idx").on(t.leadId),
     index("bookings_org_status_idx").on(t.orgId, t.status, t.bookedAt),
+    index("bookings_org_verification_idx").on(t.orgId, t.verificationStatus, t.bookedAt),
   ],
 );
 

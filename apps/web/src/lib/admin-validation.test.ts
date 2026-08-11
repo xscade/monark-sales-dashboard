@@ -38,6 +38,10 @@ describe("admin validation", () => {
       name: "Sales Team",
       phone: null,
       role: "sales_agent",
+      roleType: null,
+      // No Advanced panel submitted means "follow the role", which is stored as
+      // null rather than as a frozen copy of today's role defaults.
+      permissions: null,
       languages: ["en", "te"],
       leadCapacity: 250,
     });
@@ -60,8 +64,47 @@ describe("admin validation", () => {
       languages: "EN, te", leadCapacity: "150",
     })).toEqual({
       email: "sales@example.com", name: "New Agent", phone: null, role: "sales_agent",
-      languages: ["en", "te"], leadCapacity: 150,
+      roleType: null, permissions: null, languages: ["en", "te"], leadCapacity: 150,
     });
+  });
+
+  it("stores the Advanced grid only when the admin chose to customise", () => {
+    const base = {
+      id: ID, name: "Accounts", phone: "", role: "read_only",
+      languages: "en", leadCapacity: "150",
+    };
+
+    // Ticked boxes are ignored while the form still says "follow role
+    // defaults" — otherwise closing the panel would silently freeze access.
+    expect(
+      updateUserSchema.parse({ ...base, accessMode: "role", access: ["bookings:read"] }).permissions,
+    ).toBeNull();
+
+    expect(
+      updateUserSchema.parse({
+        ...base,
+        accessMode: "custom",
+        roleType: "accountant",
+        access: ["accounts:read", "accounts:update", "bookings:read", "bookings:teleport", "ghost:read"],
+      }),
+    ).toMatchObject({
+      roleType: "accountant",
+      permissions: { accounts: ["read", "update"], bookings: ["read"] },
+    });
+
+    // A single checkbox arrives as a bare string rather than an array.
+    expect(
+      updateUserSchema.parse({ ...base, accessMode: "custom", access: "reports:read" }).permissions,
+    ).toEqual({ reports: ["read"] });
+
+    // Deliberately revoking everything is a real answer, not a fallback.
+    expect(
+      updateUserSchema.parse({ ...base, accessMode: "custom" }).permissions,
+    ).toEqual({});
+
+    expect(
+      updateUserSchema.safeParse({ ...base, accessMode: "custom", roleType: "auditor" }).success,
+    ).toBe(false);
   });
 
   it("coerces boolean status fields only from explicit values", () => {

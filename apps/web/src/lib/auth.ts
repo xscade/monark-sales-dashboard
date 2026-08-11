@@ -3,7 +3,19 @@ import type { User } from "@supabase/supabase-js";
 import { and, eq } from "drizzle-orm";
 import { redirect } from "next/navigation";
 import { cache } from "react";
+import {
+  effectiveGrants,
+  normalizeGrants,
+  permissionsFromGrants,
+  ROLE_TYPES,
+  type AccessGrants,
+  type Permission,
+  type RoleType,
+  type UserRole,
+} from "./permissions";
 import { createClient } from "./supabase/server";
+
+export type { Permission } from "./permissions";
 
 export interface SessionUser {
   id: string;
@@ -12,7 +24,12 @@ export interface SessionUser {
   timezone: string;
   email: string;
   name: string;
-  role: "owner" | "admin" | "marketing" | "sales_manager" | "sales_agent" | "receptionist" | "read_only";
+  role: UserRole;
+  /** Back-office specialisation; `accountant` unlocks the verification queue. */
+  roleType: RoleType | null;
+  /** Per-module overrides an admin set explicitly. `null` means the role
+   *  defaults apply — see `effectiveGrants`. */
+  permissions: AccessGrants | null;
 }
 
 /**
@@ -59,6 +76,8 @@ export const getCurrentUser = cache(async (): Promise<SessionUser | null> => {
       email: users.email,
       name: users.name,
       role: users.role,
+      roleType: users.roleType,
+      permissions: users.permissions,
       orgName: orgs.name,
       timezone: orgs.timezone,
     })
@@ -77,6 +96,10 @@ export const getCurrentUser = cache(async (): Promise<SessionUser | null> => {
     email: row.email,
     name: row.name,
     role: row.role,
+    roleType: ROLE_TYPES.includes(row.roleType as RoleType) ? (row.roleType as RoleType) : null,
+    // A grid stored before a module was renamed or retired would otherwise hand
+    // out permissions for a module that no longer exists.
+    permissions: row.permissions ? normalizeGrants(row.permissions) : null,
   };
 });
 
@@ -106,39 +129,17 @@ export async function requireUser(): Promise<SessionUser> {
 }
 
 /**
- * Role gate.
+ * Access gate.
  *
  * Sales agents must not see campaign spend or be able to rotate API keys;
- * marketing has no business editing bookings. Kept as a small explicit map
- * rather than scattered `role === "admin"` checks, so the permission surface
- * can be read in one place.
+ * marketing has no business editing bookings. The rules themselves live in
+ * `permissions.ts` as a module grid — the same grid an admin edits in
+ * Settings → Users — so there is exactly one description of who may do what,
+ * whether it came from a role or from an explicit grant.
  */
-export const PERMISSIONS = {
-  "leads:read": ["owner", "admin", "marketing", "sales_manager", "sales_agent", "receptionist", "read_only"],
-  "leads:write": ["owner", "admin", "sales_manager", "sales_agent", "receptionist"],
-  "leads:assign": ["owner", "admin", "sales_manager"],
-  "customers:read": ["owner", "admin", "marketing", "sales_manager", "sales_agent", "receptionist", "read_only"],
-  "customers:write": ["owner", "admin", "sales_manager", "sales_agent", "receptionist"],
-  "tasks:read": ["owner", "admin", "marketing", "sales_manager", "sales_agent", "receptionist", "read_only"],
-  "tasks:write": ["owner", "admin", "sales_manager", "sales_agent", "receptionist"],
-  "visits:read": ["owner", "admin", "marketing", "sales_manager", "sales_agent", "receptionist", "read_only"],
-  "visits:write": ["owner", "admin", "sales_manager", "sales_agent", "receptionist"],
-  "inventory:read": ["owner", "admin", "marketing", "sales_manager", "sales_agent", "receptionist", "read_only"],
-  "inventory:write": ["owner", "admin", "sales_manager"],
-  "bookings:read": ["owner", "admin", "marketing", "sales_manager", "sales_agent", "receptionist", "read_only"],
-  "bookings:write": ["owner", "admin", "sales_manager"],
-  "campaigns:read": ["owner", "admin", "marketing", "sales_manager"],
-  "campaigns:write": ["owner", "admin", "marketing"],
-  "conversions:read": ["owner", "admin", "marketing"],
-  "conversions:write": ["owner", "admin", "marketing"],
-  "reports:read": ["owner", "admin", "marketing", "sales_manager", "read_only"],
-  "settings:write": ["owner", "admin"],
-} satisfies Record<string, SessionUser["role"][]>;
-
-export type Permission = keyof typeof PERMISSIONS;
-
 export function can(user: SessionUser, permission: Permission): boolean {
-  return (PERMISSIONS[permission] as readonly SessionUser["role"][]).includes(user.role);
+  const granted = effectiveGrants(user.role, user.permissions, user.roleType);
+  return permissionsFromGrants(granted).has(permission);
 }
 
 export async function requirePermission(permission: Permission): Promise<SessionUser> {

@@ -1,19 +1,17 @@
 import Link from "next/link";
+import { AccessMatrix } from "@/components/access-matrix";
 import { Card, EmptyState, SubmitButton } from "@/components/ui";
 import { inviteUser, setUserActive, updateUser } from "@/lib/admin-actions";
 import { getAdminUsers } from "@/lib/admin-queries";
 import { USER_ROLES } from "@/lib/admin-validation";
 import { formatRelative } from "@/lib/format";
+import { ROLE_TYPE_LABELS, roleLabel, type RoleType, type UserRole } from "@/lib/permissions";
 import { SettingsFlash } from "../settings-flash";
 
 export const dynamic = "force-dynamic";
 
 const fieldClass =
   "mt-1 w-full rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm outline-none focus:border-brand-500 dark:border-zinc-700 dark:bg-zinc-950";
-
-function roleLabel(role: string) {
-  return role.replace(/_/g, " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
-}
 
 export default async function UsersSettingsPage({
   searchParams,
@@ -38,14 +36,17 @@ export default async function UsersSettingsPage({
       <SettingsFlash notice={messages.notice} error={messages.error} />
 
       <Card title="Invite user" subtitle="Creates CRM access and sends a Supabase password invitation when needed">
-        <form action={inviteUser} className="grid gap-3 p-5 sm:grid-cols-2 lg:grid-cols-6">
-          <label className="text-xs font-medium text-zinc-600 dark:text-zinc-300 lg:col-span-2">Email<input required type="email" name="email" maxLength={254} placeholder="agent@company.com" className={fieldClass} /></label>
-          <label className="text-xs font-medium text-zinc-600 dark:text-zinc-300 lg:col-span-2">Name<input required name="name" maxLength={120} placeholder="Agent name" className={fieldClass} /></label>
-          <label className="text-xs font-medium text-zinc-600 dark:text-zinc-300">Role<select name="role" defaultValue="sales_agent" className={fieldClass}>{USER_ROLES.map((role) => <option key={role} value={role}>{roleLabel(role)}</option>)}</select></label>
-          <label className="text-xs font-medium text-zinc-600 dark:text-zinc-300">Capacity<input required type="number" name="leadCapacity" min={1} max={10000} defaultValue={150} className={fieldClass} /></label>
-          <label className="text-xs font-medium text-zinc-600 dark:text-zinc-300 lg:col-span-2">Phone<input name="phone" maxLength={32} className={fieldClass} /></label>
-          <label className="text-xs font-medium text-zinc-600 dark:text-zinc-300 lg:col-span-2">Languages<input name="languages" defaultValue="en" placeholder="en, hi, te" className={fieldClass} /></label>
-          <div className="flex items-end lg:col-span-2"><SubmitButton className="w-full">Create access & invite</SubmitButton></div>
+        <form action={inviteUser} className="space-y-4 p-5">
+          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-6">
+            <label className="text-xs font-medium text-zinc-600 dark:text-zinc-300 lg:col-span-2">Email<input required type="email" name="email" maxLength={254} placeholder="agent@company.com" className={fieldClass} /></label>
+            <label className="text-xs font-medium text-zinc-600 dark:text-zinc-300 lg:col-span-2">Name<input required name="name" maxLength={120} placeholder="Agent name" className={fieldClass} /></label>
+            <label className="text-xs font-medium text-zinc-600 dark:text-zinc-300">Role<select name="role" defaultValue="sales_agent" className={fieldClass}>{USER_ROLES.map((role) => <option key={role} value={role}>{roleLabel(role)}</option>)}</select></label>
+            <label className="text-xs font-medium text-zinc-600 dark:text-zinc-300">Capacity<input required type="number" name="leadCapacity" min={1} max={10000} defaultValue={150} className={fieldClass} /></label>
+            <label className="text-xs font-medium text-zinc-600 dark:text-zinc-300 lg:col-span-2">Phone<input name="phone" maxLength={32} className={fieldClass} /></label>
+            <label className="text-xs font-medium text-zinc-600 dark:text-zinc-300 lg:col-span-2">Languages<input name="languages" defaultValue="en" placeholder="en, hi, te" className={fieldClass} /></label>
+          </div>
+          <AccessMatrix idPrefix="invite" role="sales_agent" roleType={null} grants={null} />
+          <div className="flex justify-end"><SubmitButton>Create access & invite</SubmitButton></div>
         </form>
       </Card>
 
@@ -76,6 +77,16 @@ export default async function UsersSettingsPage({
                         {isCurrentUser && (
                           <span className="rounded bg-zinc-100 px-1.5 py-0.5 text-[11px] text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300">
                             Current session
+                          </span>
+                        )}
+                        {user.roleType && (
+                          <span className="rounded bg-sky-100 px-1.5 py-0.5 text-[11px] font-medium text-sky-700 dark:bg-sky-950 dark:text-sky-300">
+                            {ROLE_TYPE_LABELS[user.roleType as RoleType]}
+                          </span>
+                        )}
+                        {user.permissions && (
+                          <span className="rounded bg-amber-100 px-1.5 py-0.5 text-[11px] font-medium text-amber-700 dark:bg-amber-950 dark:text-amber-300">
+                            Custom access
                           </span>
                         )}
                       </div>
@@ -149,20 +160,29 @@ export default async function UsersSettingsPage({
                         />
                       </label>
                     </div>
-                    <div className="flex flex-wrap items-end justify-between gap-3">
-                      <label className="min-w-64 flex-1 text-xs font-medium text-zinc-600 dark:text-zinc-300">
-                        Routing languages
-                        <input
-                          name="languages"
-                          maxLength={200}
-                          defaultValue={user.languages.join(", ")}
-                          placeholder="en, hi, te"
-                          className={fieldClass}
-                        />
-                        <span className="mt-1 block font-normal text-zinc-400">
-                          Comma-separated language codes
-                        </span>
-                      </label>
+                    <label className="block max-w-md text-xs font-medium text-zinc-600 dark:text-zinc-300">
+                      Routing languages
+                      <input
+                        name="languages"
+                        maxLength={200}
+                        defaultValue={user.languages.join(", ")}
+                        placeholder="en, hi, te"
+                        className={fieldClass}
+                      />
+                      <span className="mt-1 block font-normal text-zinc-400">
+                        Comma-separated language codes
+                      </span>
+                    </label>
+
+                    <AccessMatrix
+                      idPrefix={user.id}
+                      role={user.role as UserRole}
+                      roleType={user.roleType as RoleType | null}
+                      grants={user.permissions}
+                      defaultOpen={Boolean(user.permissions || user.roleType)}
+                    />
+
+                    <div className="flex justify-end">
                       <SubmitButton>Save user</SubmitButton>
                     </div>
                   </form>

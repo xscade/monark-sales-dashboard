@@ -106,6 +106,13 @@ export async function getOverviewStats(orgId: string, timezone = "Asia/Kolkata",
           ${ownerId ? sql`AND l.owner_user_id = ${ownerId}` : sql``}
           AND b.booked_at >= now() - interval '30 days'
           AND b.status <> 'cancelled') AS "bookings30d",
+      (SELECT COUNT(*)::int FROM bookings b
+        JOIN leads l ON l.id = b.lead_id AND l.org_id = b.org_id
+        WHERE b.org_id = ${orgId}
+          ${ownerId ? sql`AND l.owner_user_id = ${ownerId}` : sql``}
+          AND b.booked_at >= now() - interval '30 days'
+          AND b.status <> 'cancelled'
+          AND b.verification_status = 'validated') AS "validatedBookings30d",
       (SELECT COALESCE(
           ROUND(PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY first_response_seconds)::numeric),
           0
@@ -146,7 +153,16 @@ export async function getOverviewTrend(orgId: string, timezone = "Asia/Kolkata",
         JOIN leads l ON l.id = b.lead_id AND l.org_id = b.org_id
         WHERE b.org_id = ${orgId} AND b.status <> 'cancelled'
           ${ownerId ? sql`AND l.owner_user_id = ${ownerId}` : sql``}
-          AND (b.booked_at AT TIME ZONE ${timezone})::date = c.day) AS bookings
+          AND (b.booked_at AT TIME ZONE ${timezone})::date = c.day) AS bookings,
+      -- Plotted alongside bookings rather than instead of them: the gap
+      -- between the two lines is the day's unverified money, which is the
+      -- number worth noticing on a dashboard.
+      (SELECT COUNT(*)::int FROM bookings b
+        JOIN leads l ON l.id = b.lead_id AND l.org_id = b.org_id
+        WHERE b.org_id = ${orgId} AND b.status <> 'cancelled'
+          ${ownerId ? sql`AND l.owner_user_id = ${ownerId}` : sql``}
+          AND b.verification_status = 'validated'
+          AND (b.booked_at AT TIME ZONE ${timezone})::date = c.day) AS "validatedBookings"
     FROM calendar c
     ORDER BY c.day
   `);
@@ -157,6 +173,7 @@ export async function getOverviewTrend(orgId: string, timezone = "Asia/Kolkata",
     leads: number;
     visits: number;
     bookings: number;
+    validatedBookings: number;
   }[];
 }
 

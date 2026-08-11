@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import Link from "next/link";
 import { notFound } from "next/navigation";
+import { BookingStatusBadge, VerificationBadge } from "@/components/booking-status";
 import { Card, DataTable, EmptyState, StatTile, SubmitButton, Td, Th } from "@/components/ui";
 import { can, requirePermission } from "@/lib/auth";
 import {
@@ -10,19 +11,12 @@ import {
 } from "@/lib/commercial-actions";
 import { getBookingDetail } from "@/lib/commercial-queries";
 import { formatDateTime, formatINR } from "@/lib/format";
+import { unverifiedAmount, verificationDrifted } from "@/lib/verification";
 
 export const dynamic = "force-dynamic";
 
 const inputClass =
   "w-full rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm outline-none focus:border-brand-500 dark:border-zinc-700 dark:bg-zinc-950";
-
-const statusClass: Record<string, string> = {
-  token: "bg-cyan-100 text-cyan-700 dark:bg-cyan-950 dark:text-cyan-300",
-  booked: "bg-green-600 text-white",
-  agreement_signed: "bg-indigo-100 text-indigo-700 dark:bg-indigo-950 dark:text-indigo-300",
-  registered: "bg-violet-100 text-violet-700 dark:bg-violet-950 dark:text-violet-300",
-  cancelled: "bg-red-100 text-red-700 dark:bg-red-950 dark:text-red-300",
-};
 
 const NEXT_STATUS: Record<string, { status: "booked" | "agreement_signed" | "registered"; label: string } | undefined> = {
   token: { status: "booked", label: "Confirm booking" },
@@ -37,6 +31,7 @@ export default async function BookingDetailPage({ params }: { params: Promise<{ 
   if (!booking) notFound();
 
   const mayWrite = can(user, "bookings:write");
+  const mayCancel = can(user, "bookings:delete");
   const next = NEXT_STATUS[booking.status];
   const netCollected = Number(booking.collectedAmount) || 0;
   const agreementValue = Number(booking.agreementValue) || 0;
@@ -48,11 +43,8 @@ export default async function BookingDetailPage({ params }: { params: Promise<{ 
         <div>
           <div className="flex flex-wrap items-center gap-2">
             <h2 className="text-xl font-semibold">{booking.reference}</h2>
-            <span
-              className={`inline-flex rounded-md px-2 py-0.5 text-xs font-medium ${statusClass[booking.status] ?? "bg-zinc-100 text-zinc-700"}`}
-            >
-              {booking.status.replace(/_/g, " ")}
-            </span>
+            <BookingStatusBadge status={booking.status} />
+            <VerificationBadge view={booking} showPending />
           </div>
           <p className="mt-1 text-sm text-zinc-500">
             {booking.projectName ?? "Project"} · {booking.unitLabel ?? "Unit unavailable"}
@@ -108,6 +100,33 @@ export default async function BookingDetailPage({ params }: { params: Promise<{ 
                   <span className="block text-xs text-red-600">{booking.cancellationReason}</span>
                 </Detail>
               )}
+              {/* Accounts is a separate voice from sales; when it has spoken,
+                  the record says so beside the milestones rather than only in
+                  a badge at the top. */}
+              <Detail label="Accounts verification">
+                {booking.verificationStatus === "pending" ? (
+                  <span className="text-zinc-500">Awaiting verification</span>
+                ) : (
+                  <>
+                    <span>
+                      {booking.verificationStatus === "validated" ? "Validated" : "No match"} by{" "}
+                      {booking.verifiedByName ?? "accounts"} · {formatDateTime(booking.verifiedAt)}
+                    </span>
+                    <span className="block text-xs text-zinc-500">
+                      Checked against {formatINR(booking.verifiedAmount, true)} collected
+                    </span>
+                    {booking.verificationNote && (
+                      <span className="block text-xs text-zinc-500">{booking.verificationNote}</span>
+                    )}
+                    {verificationDrifted(booking) && (
+                      <span className="mt-1 block text-xs text-amber-700 dark:text-amber-400">
+                        {formatINR(unverifiedAmount(booking), true)} received since — back with
+                        accounts.
+                      </span>
+                    )}
+                  </>
+                )}
+              </Detail>
             </dl>
           </Card>
 
@@ -222,7 +241,7 @@ export default async function BookingDetailPage({ params }: { params: Promise<{ 
               </Card>
             )}
 
-            {booking.status !== "cancelled" && booking.status !== "registered" && (
+            {mayCancel && booking.status !== "cancelled" && booking.status !== "registered" && (
               <Card title="Cancel booking" subtitle="Payments remain in the ledger; record any refund separately.">
                 <form action={cancelBookingAction} className="space-y-3 p-4">
                   <input type="hidden" name="bookingId" value={booking.id} />

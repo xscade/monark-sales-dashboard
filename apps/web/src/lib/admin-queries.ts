@@ -51,6 +51,8 @@ export async function getAdminUsers() {
       name: users.name,
       phone: users.phone,
       role: users.role,
+      roleType: users.roleType,
+      permissions: users.permissions,
       languages: users.languages,
       leadCapacity: users.leadCapacity,
       isActive: users.isActive,

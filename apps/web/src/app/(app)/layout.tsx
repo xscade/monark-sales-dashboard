@@ -43,6 +43,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
       items: [
         { href: "/inventory", label: "Inventory", show: can(user, "inventory:read") },
         { href: "/bookings", label: "Bookings & payments", show: can(user, "bookings:read") },
+        { href: "/accounts", label: "Accounts", show: can(user, "accounts:read") },
       ],
     },
     {

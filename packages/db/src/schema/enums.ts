@@ -214,3 +214,31 @@ export const userRole = pgEnum("user_role", [
   "receptionist",
   "read_only",
 ]);
+
+/**
+ * Specialist overlay on top of `userRole`.
+ *
+ * A role says where someone sits in the sales org; a role type says which
+ * back-office workflow they own. `accountant` is the only one so far: it unlocks
+ * the money-verification queue, which no sales role should ever hold — the
+ * person who books the flat must not be the person who confirms the cash
+ * arrived.
+ *
+ * Kept separate from `userRole` rather than added to it because the two answer
+ * different questions and an accountant still needs a base role for routing.
+ */
+export const userRoleType = pgEnum("user_role_type", ["accountant"]);
+
+/**
+ * Whether finance has reconciled a booking against the bank.
+ *
+ * `no_match` is deliberately not "rejected". The accountant is not overruling
+ * the sale — they are reporting that the money they can see does not agree with
+ * what the register claims, which is a question for sales to answer, not a
+ * verdict on the booking.
+ */
+export const bookingVerificationStatus = pgEnum("booking_verification_status", [
+  "pending",
+  "validated",
+  "no_match",
+]);

@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { Check } from "lucide-react";
 import { can, requirePermission } from "@/lib/auth";
 import {
   canViewSalesTeam,
@@ -190,6 +191,15 @@ export default async function CustomersPage({
                         >
                           {customer.bookingCount > 0 ? "Customer" : "Lead"}
                         </span>
+                        {customer.validatedBookingCount > 0 && (
+                          <span
+                            title="Accounts has matched this customer's booking amount against the bank"
+                            className="inline-flex items-center gap-0.5 rounded bg-emerald-600 px-1.5 py-0.5 text-[10px] font-medium text-white"
+                          >
+                            <Check className="size-2.5" strokeWidth={3} />
+                            Validated
+                          </span>
+                        )}
                       </div>
                       <p className="tabular mt-0.5 text-xs text-zinc-500">
                         {maskPhoneDisplay(customer.primaryPhone)}

@@ -16,11 +16,16 @@ interface TrendPoint {
   leads: number;
   visits: number;
   bookings: number;
+  validatedBookings: number;
 }
 
 export function OverviewTrendChart({ data }: { data: TrendPoint[] }) {
   return (
-    <div className="h-[290px] w-full" role="img" aria-label="Daily leads, visits and bookings over the last 30 days">
+    <div
+      className="h-[290px] w-full"
+      role="img"
+      aria-label="Daily leads, visits, bookings and accounts-validated bookings over the last 30 days"
+    >
       <ResponsiveContainer width="100%" height="100%">
         <AreaChart data={data} margin={{ top: 8, right: 6, left: -26, bottom: 0 }}>
           <defs>
@@ -85,6 +90,19 @@ export function OverviewTrendChart({ data }: { data: TrendPoint[] }) {
             name="Bookings"
             stroke="#4679d8"
             strokeWidth={2}
+            fill="transparent"
+            activeDot={{ r: 4, strokeWidth: 0 }}
+          />
+          {/* Dashed and unfilled: it is a subset of the bookings line, not a
+              fourth independent quantity, and the gap between them is the
+              point. */}
+          <Area
+            type="monotone"
+            dataKey="validatedBookings"
+            name="Validated bookings"
+            stroke="#0f9d6b"
+            strokeWidth={2}
+            strokeDasharray="5 3"
             fill="transparent"
             activeDot={{ r: 4, strokeWidth: 0 }}
           />

@@ -52,9 +52,26 @@ function redirectOnInputError(error: unknown, returnTo: string): never {
   throw error;
 }
 
-function formValues(formData: FormData): Record<string, FormDataEntryValue> {
-  return Object.fromEntries(formData.entries());
+/**
+ * FormData to a plain object, keeping repeated keys as arrays.
+ *
+ * `Object.fromEntries` silently keeps only the last value, which for the access
+ * grid — one checkbox per module action, all named `access` — would quietly
+ * reduce a full set of permissions to whichever box happened to come last.
+ */
+function formValues(
+  formData: FormData,
+): Record<string, FormDataEntryValue | FormDataEntryValue[]> {
+  const values: Record<string, FormDataEntryValue | FormDataEntryValue[]> = {};
+  for (const [key, value] of formData.entries()) {
+    const existing = values[key];
+    if (existing === undefined) values[key] = value;
+    else if (Array.isArray(existing)) existing.push(value);
+    else values[key] = [existing, value];
+  }
+  return values;
 }
+
 
 export async function inviteUser(formData: FormData): Promise<void> {
   const actor = await requirePermission("settings:write");
@@ -92,13 +109,18 @@ export async function inviteUser(formData: FormData): Promise<void> {
       const id = randomUUID();
       await tx.insert(users).values({
         id, orgId: actor.orgId, email: input.email, name: input.name, phone: input.phone,
-        role: input.role, languages: input.languages, leadCapacity: String(input.leadCapacity), isActive: true,
+        role: input.role, roleType: input.roleType, permissions: input.permissions,
+        languages: input.languages, leadCapacity: String(input.leadCapacity), isActive: true,
       });
       await tx.insert(auditLogs).values({
         orgId: actor.orgId, actorUserId: actor.id,
         action: existingIdentity ? "user.access_granted" : "user.invited",
         entityType: "user", entityId: id,
-        after: { email: input.email, name: input.name, role: input.role, languages: input.languages, existingAuthIdentity: Boolean(existingIdentity) },
+        after: {
+          email: input.email, name: input.name, role: input.role, roleType: input.roleType,
+          permissions: input.permissions, languages: input.languages,
+          existingAuthIdentity: Boolean(existingIdentity),
+        },
       });
     });
   } catch (error) {
@@ -127,6 +149,8 @@ export async function updateUser(formData: FormData): Promise<void> {
           name: users.name,
           phone: users.phone,
           role: users.role,
+          roleType: users.roleType,
+          permissions: users.permissions,
           languages: users.languages,
           leadCapacity: users.leadCapacity,
           isActive: users.isActive,
@@ -138,6 +162,15 @@ export async function updateUser(formData: FormData): Promise<void> {
       if (!target) throw new AdminInputError("User not found");
       if (target.id === actor.id && target.role !== input.role) {
         throw new AdminInputError("You cannot change your own role");
+      }
+      // Custom grants can revoke Settings, and revoking your own is a one-way
+      // door: the screen that would undo it is the screen you just closed.
+      if (
+        target.id === actor.id &&
+        input.permissions !== null &&
+        !input.permissions.settings?.includes("update")
+      ) {
+        throw new AdminInputError("You cannot remove your own Settings access");
       }
 
       if (target.isActive && target.role === "owner" && input.role !== "owner") {
@@ -155,6 +188,8 @@ export async function updateUser(formData: FormData): Promise<void> {
         name: input.name,
         phone: input.phone,
         role: input.role,
+        roleType: input.roleType,
+        permissions: input.permissions,
         languages: input.languages,
         leadCapacity: String(input.leadCapacity),
       };
@@ -176,6 +211,8 @@ export async function updateUser(formData: FormData): Promise<void> {
           name: target.name,
           phone: target.phone,
           role: target.role,
+          roleType: target.roleType,
+          permissions: target.permissions,
           languages: target.languages,
           leadCapacity: target.leadCapacity,
         },

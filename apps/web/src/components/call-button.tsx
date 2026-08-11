@@ -16,6 +16,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { cn } from "@/lib/utils";
 
 /**
  * Call control that adapts to the device it is clicked on.
@@ -71,10 +72,12 @@ export function CallButton({
           event.preventDefault();
           setOpen(true);
         }}
-        className={
-          className ??
-          "flex items-center gap-1.5 rounded-lg border border-zinc-300 px-2.5 py-1.5 text-xs font-medium transition hover:bg-zinc-50 dark:border-zinc-700 dark:hover:bg-zinc-800"
-        }
+        // Merged, not replaced: a caller that only wants to widen the control
+        // should not have to restate the border, padding and hover state.
+        className={cn(
+          "inline-flex items-center gap-1.5 rounded-lg border border-zinc-300 px-2.5 py-1.5 text-xs font-medium transition hover:bg-zinc-50 dark:border-zinc-700 dark:hover:bg-zinc-800",
+          className,
+        )}
       >
         <Phone aria-hidden className="size-3.5" />
         Call

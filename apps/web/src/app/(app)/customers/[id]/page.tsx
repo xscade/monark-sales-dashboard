@@ -15,6 +15,8 @@ import { sortTimeline, type TimelineEntry } from "@/lib/timeline";
 import { Timeline } from "@/components/timeline";
 import { ArrowRight } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { CallButton } from "@/components/call-button";
+import { buildCallTarget } from "@/lib/call";
 import { Card, EmptyState, SourceBadge, StageBadge, SubmitButton } from "@/components/ui";
 
 export const dynamic = "force-dynamic";
@@ -50,6 +52,7 @@ export default async function CustomerDetailPage({
   // The live enquiry if there is one, otherwise the most recent — the same
   // one an agent means when they say "open Krishna".
   const primaryOpportunity = activeOpportunities[0] ?? opportunities[0] ?? null;
+  const callTarget = buildCallTarget(customer.primaryPhone);
   const mayWriteCustomer = can(user, "customers:write");
   const mayWriteTasks = can(user, "tasks:write");
 
@@ -193,6 +196,14 @@ export default async function CustomerDetailPage({
               shortlist. This page is the person behind it, so the way across
               is a control in its own right rather than a row you must guess
               is clickable. */}
+          {callTarget && (
+            <CallButton
+              target={callTarget}
+              name={customer.fullName ?? "this customer"}
+              className="h-9 w-full justify-center rounded-md text-sm"
+            />
+          )}
+
           {primaryOpportunity && (
             <Button asChild className="w-full">
               <Link href={`/leads/${primaryOpportunity.id}`}>

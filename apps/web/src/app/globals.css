@@ -54,8 +54,17 @@
   --card-foreground: oklch(0.95 0.008 82);
   --popover: oklch(0.215 0.024 249);
   --popover-foreground: oklch(0.95 0.008 82);
-  --primary: oklch(0.69 0.14 159);
-  --primary-foreground: oklch(0.16 0.03 249);
+  /* Green buttons carry white text in both themes.
+   *
+   * Dark mode used to invert it — a light green (L 0.69) with near-black text —
+   * which put two different green buttons on the same screen, since the plain
+   * submit buttons are brand-600 with white. Flipping the text alone would not
+   * work: white on L 0.69 measures 2.61:1, well under the 4.5:1 needed to read
+   * comfortably. So the green comes down to L 0.54, where white text reaches
+   * 4.62:1 and the same colour still reads as an accent against the dark
+   * background at 4.19:1. */
+  --primary: oklch(0.54 0.14 160);
+  --primary-foreground: oklch(0.99 0 0);
   --secondary: oklch(0.28 0.027 249);
   --secondary-foreground: oklch(0.94 0.008 82);
   --muted: oklch(0.26 0.025 249);

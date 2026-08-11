@@ -8,6 +8,8 @@ import { getLeadDetail, listActiveProjects, listAgents } from "@/lib/queries";
 import { assignLead, checkInVisit, logActivity, updateLeadProject } from "@/lib/actions";
 import { saveQualification } from "@/lib/qualification-actions";
 import { Button } from "@/components/ui/button";
+import { CallButton } from "@/components/call-button";
+import { buildCallTarget } from "@/lib/call";
 import { CollapsibleLogs } from "@/components/collapsible-logs";
 import { Timeline } from "@/components/timeline";
 import { isNoteworthyStageChange, sortTimeline, type TimelineEntry } from "@/lib/timeline";
@@ -48,6 +50,7 @@ export default async function LeadDetailPage({ params }: { params: Promise<{ id:
   if (user.role === "sales_agent" && !isOwner && !isVisitHost) notFound();
   const writable = hasLeadWritePermission && (user.role !== "sales_agent" || isOwner);
   const canSeeCustomer = can(user, "customers:read");
+  const callTarget = buildCallTarget(lead.primary_phone);
   const firstTouch = touchpoints[0];
 
   const timeline: TimelineItem[] = [
@@ -149,6 +152,17 @@ export default async function LeadDetailPage({ params }: { params: Promise<{ id:
               way across, the same buyer reads as two unrelated records
               depending on which screen you happened to open. */}
           <div className="flex flex-wrap items-center justify-end gap-2">
+            {/* The number is on the page, but reaching for it meant reading it
+                off and typing it into a phone. Same control the follow-up
+                queue uses, so calling works the same way wherever you are. */}
+            {callTarget && (
+              <CallButton
+                target={callTarget}
+                name={lead.full_name ?? lead.reference}
+                // Matches Button size="sm" so it lines up with View customer.
+                className="h-8 rounded-md px-3 text-sm"
+              />
+            )}
             {canSeeCustomer && (
               <Button asChild size="sm">
                 <Link href={`/customers/${lead.person_id}`}>

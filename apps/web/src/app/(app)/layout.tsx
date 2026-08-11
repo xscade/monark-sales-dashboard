@@ -69,7 +69,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
   // the same place. The second slot goes to site visits, which is the screen
   // people actually wanted when they reached for check-in.
   const quickActions = [
-    ...(can(user, "visits:write") ? [{ href: "/walk-ins/new", label: "Add lead" }] : []),
+    ...(can(user, "visits:write") ? [{ href: "/walk-ins/new", label: "Add Customer" }] : []),
     ...(can(user, "visits:read") ? [{ href: "/site-visits", label: "Site visit" }] : []),
   ];
 

@@ -11,18 +11,14 @@ import {
   listSalesOwners,
 } from "@/lib/sales-queries";
 import { formatDate, formatDateTime, formatRelative } from "@/lib/format";
+import { groupTimeline, type TimelineEntry } from "@/lib/timeline";
+import { Timeline } from "@/components/timeline";
+import { ArrowRight } from "lucide-react";
 import { Card, EmptyState, SourceBadge, StageBadge, SubmitButton } from "@/components/ui";
 
 export const dynamic = "force-dynamic";
 
-type TimelineItem = {
-  id: string;
-  at: Date;
-  kind: "activity" | "task" | "visit";
-  title: string;
-  detail: string | null;
-  meta: string | null;
-};
+type TimelineItem = TimelineEntry;
 
 export default async function CustomerDetailPage({
   params,
@@ -55,7 +51,7 @@ export default async function CustomerDetailPage({
 
   const timeline: TimelineItem[] = [
     ...activities.map((activity) => ({
-      id: `activity-${activity.id}`,
+      groupKey: activity.leadReference ?? null,
       at: new Date(activity.occurredAt),
       kind: activity.type === "task" ? ("task" as const) : ("activity" as const),
       title:
@@ -74,22 +70,16 @@ export default async function CustomerDetailPage({
         .join(" · ") || null,
     })),
     ...visits.map((visit) => ({
-      id: `visit-${visit.id}`,
+      groupKey: visit.leadReference ?? null,
       at: new Date(visit.arrivedAt ?? visit.scheduledAt ?? 0),
       kind: "visit" as const,
       title: `${visit.type.replace(/_/g, " ")} — ${visit.status.replace(/_/g, " ")}`,
       detail: visit.notes,
       meta: [visit.hostName, visit.leadReference].filter(Boolean).join(" · ") || null,
     })),
-  ]
-    .filter((item) => !Number.isNaN(item.at.getTime()))
-    .sort((a, b) => b.at.getTime() - a.at.getTime());
+  ].filter((item) => !Number.isNaN(item.at.getTime()));
 
-  const dotClass: Record<TimelineItem["kind"], string> = {
-    activity: "bg-zinc-400",
-    task: "bg-blue-500",
-    visit: "bg-amber-500",
-  };
+  const moments = groupTimeline(timeline);
 
   return (
     <div className="space-y-6">
@@ -131,7 +121,13 @@ export default async function CustomerDetailPage({
 
       <div className="grid gap-6 lg:grid-cols-3">
         <div className="space-y-6 lg:col-span-2">
-          <Card title="Opportunities" subtitle={`${opportunities.length} across all projects`}>
+          {/* Each row already navigated to its enquiry, but nothing said so —
+              which is half of why the two screens felt like separate records
+              rather than two views of one person. */}
+          <Card
+            title="Opportunities"
+            subtitle={`${opportunities.length} across all projects · open one for its full history and actions`}
+          >
             {opportunities.length === 0 ? (
               <EmptyState title="No opportunities" />
             ) : (
@@ -153,7 +149,13 @@ export default async function CustomerDetailPage({
                           {lead.lastActivityAt ? ` · active ${formatRelative(lead.lastActivityAt)}` : ""}
                         </p>
                       </div>
-                      <StageBadge stage={lead.stage} />
+                      <span className="flex shrink-0 items-center gap-2">
+                        <StageBadge stage={lead.stage} />
+                        <span className="hidden items-center gap-1 text-xs font-medium text-brand-600 sm:inline-flex">
+                          View enquiry
+                          <ArrowRight className="size-3.5" />
+                        </span>
+                      </span>
                     </Link>
                   </li>
                 ))}
@@ -161,37 +163,15 @@ export default async function CustomerDetailPage({
             )}
           </Card>
 
-          <Card title="Timeline" subtitle={`${timeline.length} activities and visits`}>
-            {timeline.length === 0 ? (
-              <EmptyState title="Nothing recorded yet" />
-            ) : (
-              <ol className="px-5 py-4">
-                {timeline.slice(0, 150).map((item, index) => (
-                  <li key={item.id} className="relative flex gap-3 pb-4 last:pb-0">
-                    <div className="flex flex-col items-center">
-                      <span className={`mt-1.5 h-2 w-2 shrink-0 rounded-full ${dotClass[item.kind]}`} />
-                      {index < Math.min(timeline.length, 150) - 1 && (
-                        <span className="mt-1 w-px flex-1 bg-zinc-200 dark:bg-zinc-800" />
-                      )}
-                    </div>
-                    <div className="min-w-0 flex-1">
-                      <div className="flex flex-wrap items-baseline justify-between gap-2">
-                        <p className="text-sm font-medium capitalize">{item.title}</p>
-                        <time className="shrink-0 text-xs text-zinc-500">
-                          {formatDateTime(item.at, user.timezone)}
-                        </time>
-                      </div>
-                      {item.detail && (
-                        <p className="mt-0.5 whitespace-pre-wrap text-sm text-zinc-600 dark:text-zinc-400">
-                          {item.detail}
-                        </p>
-                      )}
-                      {item.meta && <p className="mt-0.5 text-xs text-zinc-500">{item.meta}</p>}
-                    </div>
-                  </li>
-                ))}
-              </ol>
-            )}
+          <Card
+            title="Timeline"
+            subtitle={`${moments.length} ${moments.length === 1 ? "event" : "events"} across every enquiry`}
+          >
+            <Timeline
+              entries={timeline}
+              emptyTitle="Nothing recorded yet"
+              timezone={user.timezone}
+            />
           </Card>
         </div>
 

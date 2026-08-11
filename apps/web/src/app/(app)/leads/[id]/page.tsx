@@ -1,18 +1,20 @@
 import Link from "next/link";
 import { randomUUID } from "node:crypto";
 import { notFound } from "next/navigation";
+import { UserRound } from "lucide-react";
 import { LEAD_STAGES } from "@monark/core";
 import { can, requirePermission } from "@/lib/auth";
 import { getLeadDetail, listActiveProjects, listAgents } from "@/lib/queries";
 import { assignLead, checkInVisit, logActivity, updateLeadProject } from "@/lib/actions";
 import { saveQualification } from "@/lib/qualification-actions";
 import { CollapsibleLogs } from "@/components/collapsible-logs";
+import { Timeline } from "@/components/timeline";
+import { groupTimeline, type TimelineEntry } from "@/lib/timeline";
 import { LeadActions } from "@/components/lead-actions";
 import { StageChangeForm } from "@/components/stage-change-form";
 import { LeadCommercialPanel } from "@/components/lead-commercial-panel";
 import { AttributionClock, Card, EmptyState, SourceBadge, StageBadge, SubmitButton } from "@/components/ui";
 import {
-  formatDateTime,
   formatDuration,
   formatINR,
   formatRelative,
@@ -22,14 +24,9 @@ import {
 export const dynamic = "force-dynamic";
 
 /** One merged, chronological stream. Sales think in "what happened, in order",
- *  not in four separate tables. */
-type TimelineItem = {
-  at: Date;
-  kind: "touchpoint" | "stage" | "assignment" | "activity" | "visit";
-  title: string;
-  detail?: string | null;
-  meta?: string | null;
-};
+ *  not in four separate tables. `groupTimeline` then folds the rows that
+ *  describe a single moment into one entry — see lib/timeline.ts. */
+type TimelineItem = TimelineEntry;
 
 export default async function LeadDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const user = await requirePermission("leads:read");
@@ -49,12 +46,14 @@ export default async function LeadDetailPage({ params }: { params: Promise<{ id:
   const isVisitHost = visits.some((visit) => visit.host_user_id === user.id);
   if (user.role === "sales_agent" && !isOwner && !isVisitHost) notFound();
   const writable = hasLeadWritePermission && (user.role !== "sales_agent" || isOwner);
+  const canSeeCustomer = can(user, "customers:read");
   const firstTouch = touchpoints[0];
 
   const timeline: TimelineItem[] = [
     ...touchpoints.map((t) => ({
       at: new Date(t.occurred_at),
       kind: "touchpoint" as const,
+      groupKey: lead.id,
       title: `Enquiry via ${String(t.source).replace(/_/g, " ")}`,
       detail: [t.campaign_name, t.creative_name, t.keyword].filter(Boolean).join(" · ") || null,
       meta: t.landing_page,
@@ -62,6 +61,7 @@ export default async function LeadDetailPage({ params }: { params: Promise<{ id:
     ...history.map((h) => ({
       at: new Date(h.created_at),
       kind: "stage" as const,
+      groupKey: lead.id,
       title: h.from_stage
         ? `${stageLabel(h.from_stage)} → ${stageLabel(h.to_stage)}`
         : `Stage set to ${stageLabel(h.to_stage)}`,
@@ -73,6 +73,7 @@ export default async function LeadDetailPage({ params }: { params: Promise<{ id:
     ...assignments.map((assignment) => ({
       at: new Date(assignment.created_at),
       kind: "assignment" as const,
+      groupKey: lead.id,
       title: assignment.to_user_name ? `Assigned to ${assignment.to_user_name}` : "Lead unassigned",
       detail: assignment.reason,
       meta: [assignment.from_user_name ? `from ${assignment.from_user_name}` : null, assignment.rule]
@@ -82,6 +83,7 @@ export default async function LeadDetailPage({ params }: { params: Promise<{ id:
     ...activities.map((a) => ({
       at: new Date(a.occurred_at),
       kind: "activity" as const,
+      groupKey: a.lead_id,
       // The subject is the only part that says what actually happened; without
       // it every follow-up task and note rendered as the bare word "task".
       title: a.subject ?? (a.type === "call" ? `Call — ${a.call_outcome ?? "logged"}` : a.type),
@@ -96,6 +98,7 @@ export default async function LeadDetailPage({ params }: { params: Promise<{ id:
     ...visits.map((v) => ({
       at: new Date(v.arrived_at ?? v.scheduled_at),
       kind: "visit" as const,
+      groupKey: v.lead_id,
       title: v.arrived_at
         ? `Visited — ${String(v.type).replace(/_/g, " ")}`
         : `Visit scheduled — ${String(v.type).replace(/_/g, " ")}`,
@@ -120,17 +123,9 @@ export default async function LeadDetailPage({ params }: { params: Promise<{ id:
         .filter(Boolean)
         .join(" · ") || null,
     })),
-  ]
-    .filter((i) => !Number.isNaN(i.at.getTime()))
-    .sort((a, b) => b.at.getTime() - a.at.getTime());
+  ].filter((i) => !Number.isNaN(i.at.getTime()));
 
-  const dotClass: Record<TimelineItem["kind"], string> = {
-    touchpoint: "bg-brand-500",
-    stage: "bg-emerald-500",
-    assignment: "bg-violet-500",
-    activity: "bg-zinc-400",
-    visit: "bg-amber-500",
-  };
+  const moments = groupTimeline(timeline);
 
   return (
     <div className="space-y-5">
@@ -144,6 +139,22 @@ export default async function LeadDetailPage({ params }: { params: Promise<{ id:
             {lead.primary_phone ?? "—"}
             {lead.primary_email ? ` · ${lead.primary_email}` : ""} · {lead.reference}
           </p>
+          {/* This page is one enquiry; the person may have several. Without a
+              way across, the same buyer reads as two unrelated records
+              depending on which screen you happened to open. */}
+          {canSeeCustomer && (
+            <Link
+              href={`/customers/${lead.person_id}`}
+              className="mt-2 inline-flex items-center gap-1.5 rounded-lg border border-zinc-300 px-2.5 py-1.5 text-xs font-medium transition hover:bg-zinc-50 dark:border-zinc-700 dark:hover:bg-zinc-800"
+            >
+              <UserRound className="size-3.5" />
+              View customer
+              <span className="text-zinc-400">·</span>
+              <span className="font-normal text-zinc-500">
+                contact details and every enquiry
+              </span>
+            </Link>
+          )}
         </div>
         <div className="flex flex-col items-end gap-2">
           <div className="flex items-center gap-2">
@@ -172,37 +183,8 @@ export default async function LeadDetailPage({ params }: { params: Promise<{ id:
 
       {/* Full width and outside the balanced flow below: the log is long, and
           collapsed by default so it never buries the actionable cards. */}
-      <CollapsibleLogs count={timeline.length}>
-            {timeline.length === 0 ? (
-              <EmptyState title="Nothing logged yet" />
-            ) : (
-              <ol className="relative space-y-0 px-5 py-4">
-                {timeline.map((item, i) => (
-                  <li key={i} className="relative flex gap-3 pb-4 last:pb-0">
-                    <div className="flex flex-col items-center">
-                      <span className={`mt-1.5 h-2 w-2 shrink-0 rounded-full ${dotClass[item.kind]}`} />
-                      {i < timeline.length - 1 && (
-                        <span className="mt-1 w-px flex-1 bg-zinc-200 dark:bg-zinc-800" />
-                      )}
-                    </div>
-                    <div className="min-w-0 flex-1">
-                      <div className="flex flex-wrap items-baseline justify-between gap-2">
-                        <p className="text-sm font-medium capitalize">{item.title}</p>
-                        <time className="shrink-0 text-xs text-zinc-500" dateTime={item.at.toISOString()}>
-                          {formatDateTime(item.at)}
-                        </time>
-                      </div>
-                      {item.detail && (
-                        <p className="mt-0.5 whitespace-pre-wrap text-sm text-zinc-600 dark:text-zinc-400">
-                          {item.detail}
-                        </p>
-                      )}
-                      {item.meta && <p className="mt-0.5 truncate text-xs text-zinc-500">{item.meta}</p>}
-                    </div>
-                  </li>
-                ))}
-              </ol>
-            )}
+      <CollapsibleLogs count={moments.length}>
+            <Timeline entries={timeline} />
       </CollapsibleLogs>
 
       {/*

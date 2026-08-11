@@ -1,4 +1,5 @@
 import { getDb } from "@monark/db";
+import { isManualTask } from "./activity-kind";
 import { sql, type SQL } from "drizzle-orm";
 
 const db = () => getDb();
@@ -128,6 +129,7 @@ export async function getTodaySalesQueue(
   const taskConditions: SQL[] = [
     sql`a.org_id = ${orgId}`,
     sql`a.type = 'task'`,
+    isManualTask("a"),
     sql`a.completed_at IS NULL`,
     sql`a.due_at IS NOT NULL`,
     sql`(a.due_at AT TIME ZONE ${timezone})::date <= (now() AT TIME ZONE ${timezone})::date`,
@@ -211,7 +213,13 @@ export async function listSalesTasks(
   timezone: string,
   filters: TaskListFilters = {},
 ): Promise<SalesTaskRow[]> {
-  const conditions: SQL[] = [sql`a.org_id = ${orgId}`, sql`a.type = 'task'`];
+  // Manual entries only. The Tasks page is a notepad, not a second copy of
+  // the callback queue — see lib/activity-kind.ts.
+  const conditions: SQL[] = [
+    sql`a.org_id = ${orgId}`,
+    sql`a.type = 'task'`,
+    isManualTask("a"),
+  ];
   const status = filters.status ?? "open";
 
   if (filters.ownerId) conditions.push(sql`a.user_id = ${filters.ownerId}`);

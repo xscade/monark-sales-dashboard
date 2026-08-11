@@ -7,6 +7,7 @@ import { redirect } from "next/navigation";
 import { z } from "zod";
 import { requirePermission, type SessionUser } from "./auth";
 import { syncLeadNextFollowUp } from "./follow-up-sync";
+import { ACTIVITY_KINDS } from "./activity-kind";
 
 const TEAM_ROLES = new Set(["owner", "admin", "sales_manager"]);
 
@@ -35,6 +36,13 @@ const createTaskSchema = z.object({
   body: z.string().trim().max(5_000, "Task notes are too long").optional(),
   dueAt: localDateTimeSchema,
   assigneeId: z.string().uuid("Choose a valid assignee").optional().or(z.literal("")),
+  /**
+   * Which list this belongs to. The Tasks page writes a manual note; the
+   * customer card is explicitly labelled "Create follow-up task" and belongs in
+   * the callback queue. Defaults to a note, so nothing lands in the callback
+   * queue unless a screen asks for it.
+   */
+  kind: z.enum(ACTIVITY_KINDS).default("task"),
 });
 
 const taskIdSchema = z.object({ taskId: z.string().uuid("Task was invalid") });
@@ -91,6 +99,7 @@ export async function createTask(formData: FormData): Promise<void> {
     body: formString(formData, "body"),
     dueAt: formString(formData, "dueAt"),
     assigneeId: formString(formData, "assigneeId"),
+    kind: formString(formData, "kind") || undefined,
   });
 
   if (!parsed.success) {
@@ -99,6 +108,7 @@ export async function createTask(formData: FormData): Promise<void> {
 
   const input = parsed.data;
   const assigneeId = canManageTeam(user) && input.assigneeId ? input.assigneeId : user.id;
+  const kind = input.kind;
   let personId: string | null = null;
 
   try {
@@ -135,7 +145,7 @@ export async function createTask(formData: FormData): Promise<void> {
           ${input.submissionId}, ${user.orgId}, ${input.leadId}, ${lead.personId},
           'task', ${input.subject}, ${input.body || null},
           (${input.dueAt}::timestamp AT TIME ZONE ${user.timezone}),
-          ${assigneeId}, ${JSON.stringify({ source: "sales_ui" })}::jsonb, now(), now()
+          ${assigneeId}, ${JSON.stringify({ kind, source: "sales_ui" })}::jsonb, now(), now()
         )
         ON CONFLICT (id) DO NOTHING
       `);

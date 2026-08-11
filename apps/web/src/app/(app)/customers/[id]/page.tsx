@@ -246,6 +246,9 @@ export default async function CustomerDetailPage({
             <Card title="Create follow-up task">
               <form action={createTask} className="space-y-3 p-5">
                 <input type="hidden" name="submissionId" value={randomUUID()} />
+                {/* This card is a callback, not a note — it belongs in the
+                    follow-up queue rather than the Tasks notepad. */}
+                <input type="hidden" name="kind" value="follow_up" />
                 <input type="hidden" name="returnTo" value={`/customers/${customer.id}`} />
                 <label className="block">
                   <span className="mb-1 block text-xs font-medium text-zinc-500">Opportunity</span>

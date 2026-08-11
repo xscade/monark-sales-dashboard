@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { activities, type getDb } from "@monark/db";
 import { sql } from "drizzle-orm";
 import { FOLLOW_UP_CHANNEL_LABELS, type FollowUpChannel } from "./follow-ups";
+import { isFollowUp } from "./activity-kind";
 
 type DbTx = Parameters<Parameters<ReturnType<typeof getDb>["transaction"]>[0]>[0];
 
@@ -43,7 +44,7 @@ export async function insertFollowUpTask(
     body,
     dueAt: at,
     userId: input.assigneeUserId,
-    metadata: { channel, source: "pipeline_stage_change", context: input.context },
+    metadata: { kind: "follow_up", channel, source: "pipeline_stage_change", context: input.context },
     occurredAt: new Date(),
   });
 
@@ -72,6 +73,7 @@ export async function syncLeadNextFollowUp(
           WHERE a.org_id = ${orgId}
             AND a.lead_id = ${leadId}
             AND a.type = 'task'
+            AND ${isFollowUp("a")}
             AND a.completed_at IS NULL
             AND a.due_at IS NOT NULL
         ),

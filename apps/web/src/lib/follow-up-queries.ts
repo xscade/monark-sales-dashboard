@@ -1,4 +1,5 @@
 import { getDb } from "@monark/db";
+import { isFollowUp } from "./activity-kind";
 import { sql, type SQL } from "drizzle-orm";
 import type { FollowUpScope, FollowUpSort } from "./follow-ups";
 
@@ -84,6 +85,7 @@ const nextTask = sql`
     WHERE a.org_id = l.org_id
       AND a.lead_id = l.id
       AND a.type = 'task'
+      AND ${isFollowUp("a")}
       AND a.completed_at IS NULL
       AND a.due_at IS NOT NULL
     ORDER BY a.due_at ASC
@@ -120,7 +122,7 @@ export async function listFollowUps(
            (
              SELECT COUNT(*)::int FROM activities a2
              WHERE a2.org_id = l.org_id AND a2.lead_id = l.id
-               AND a2.type = 'task' AND a2.completed_at IS NULL
+               AND a2.type = 'task' AND ${isFollowUp("a2")} AND a2.completed_at IS NULL
            ) AS "openFollowUps",
            COUNT(*) OVER()::int AS "totalCount"
     FROM leads l

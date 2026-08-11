@@ -64,6 +64,13 @@
       "when": 1786426200000,
       "tag": "0008_backfill_self_checkin_leads_to_new",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1786432000000,
+      "tag": "0009_split_follow_ups_from_tasks",
+      "breakpoints": true
     }
   ]
 }

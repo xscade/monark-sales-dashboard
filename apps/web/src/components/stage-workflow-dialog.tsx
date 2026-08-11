@@ -15,7 +15,6 @@ import {
 } from "@/lib/stage-advance-actions";
 import { stageRank, type LeadStage } from "@monark/core/pipeline";
 import { formatINR, stageLabel } from "@/lib/format";
-import { FOLLOW_UP_CHANNELS, FOLLOW_UP_CHANNEL_LABELS } from "@/lib/follow-ups";
 
 const field =
   "w-full rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm outline-none focus:border-brand-500 dark:border-zinc-700 dark:bg-zinc-950";
@@ -251,46 +250,6 @@ function Footer({
   );
 }
 
-/**
- * Asked by every workflow, so a lead that advances through a visit or a booking
- * lands on the follow-ups page the same way one advanced by dragging does.
- */
-function NextFollowUp({ context, offsetHours = 24 }: { context: string; offsetHours?: number }) {
-  return (
-    <div className="mt-6 border-t border-zinc-200 pt-5 dark:border-zinc-800">
-      <input type="hidden" name="followUpContext" value={context} />
-      <h3 className="text-base font-semibold tracking-tight text-brand-600 dark:text-brand-400">
-        Next follow-up
-      </h3>
-      <p className="mt-1.5 text-sm leading-snug text-zinc-500">
-        Clear it to skip, but a lead with no next step is the one that goes quiet.
-      </p>
-      <div className="mt-3 grid gap-3 sm:grid-cols-2">
-        <label className="block">
-          <span className="mb-1 block text-xs font-medium text-zinc-500">When</span>
-          <input type="datetime-local" name="followUpAt" defaultValue={localInput(offsetHours)} className={field} />
-        </label>
-        <label className="block">
-          <span className="mb-1 block text-xs font-medium text-zinc-500">How</span>
-          <select name="followUpChannel" defaultValue="call" className={field}>
-            {FOLLOW_UP_CHANNELS.map((option) => (
-              <option key={option} value={option}>{FOLLOW_UP_CHANNEL_LABELS[option]}</option>
-            ))}
-          </select>
-        </label>
-        <label className="block sm:col-span-2">
-          <span className="mb-1 block text-xs font-medium text-zinc-500">What did they commit to?</span>
-          <input name="followUpCommitment" maxLength={300} placeholder="Will confirm after speaking to spouse" className={field} />
-        </label>
-        <label className="block sm:col-span-2">
-          <span className="mb-1 block text-xs font-medium text-zinc-500">Notes for the follow-up</span>
-          <input name="followUpNote" maxLength={2000} placeholder="What to bring, what to confirm" className={field} />
-        </label>
-      </div>
-    </div>
-  );
-}
-
 function Failure({ state }: { state: StageAdvanceState }) {
   if (state.ok || !state.message) return null;
   return (
@@ -453,7 +412,6 @@ function VisitForm({
         </label>
       </div>
 
-      <NextFollowUp context={scheduling ? "after scheduling the visit" : "after the check-in"} />
 
       <Failure state={state} />
       <Footer pending={pending} label={scheduling ? "Schedule visit" : "Check in"} onCancel={onCancel} />
@@ -653,7 +611,6 @@ function BookingForm({
         </label>
       </div>
 
-      {!confirming && <NextFollowUp context="after the token payment" offsetHours={48} />}
 
       <p className="mt-3 text-xs text-zinc-500">
         This creates the booking and takes you to it. The unit and the stage follow from that record.

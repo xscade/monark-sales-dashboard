@@ -9,8 +9,6 @@ import { stageRank, type LeadStage } from "@monark/core/pipeline";
 import { requirePermission } from "./auth";
 import { lockLeadForUpdate } from "./lead-lock";
 import { checkInVisit, updateLeadProject } from "./actions";
-import { parseLocalDateTime } from "./datetime";
-import { insertFollowUpTask } from "./follow-up-sync";
 import { FOLLOW_UP_CHANNELS } from "./follow-ups";
 import { advanceBookingAction, createBookingAction } from "./commercial-actions";
 import { scheduleVisit } from "./visit-actions";
@@ -243,70 +241,17 @@ async function applyTargetStage(formData: FormData): Promise<string | null> {
   return alignStageAfterWorkflow(leadId, targetStage, reason);
 }
 
-const followUpFields = z.object({
-  followUpAt: z.preprocess((value) => String(value ?? "").trim() || undefined, z.string().optional()),
-  followUpChannel: z.enum(FOLLOW_UP_CHANNELS).default("call"),
-  followUpNote: z.preprocess((value) => String(value ?? "").trim() || undefined, z.string().max(2000).optional()),
-  followUpCommitment: z.preprocess((value) => String(value ?? "").trim() || undefined, z.string().max(300).optional()),
-});
-
 /**
- * Records the next step for a workflow-driven move.
+ * These workflows deliberately do NOT book a next step.
  *
- * Runs after the workflow rather than inside it: scheduling a visit and taking
- * a token are already transactional, and a mistyped follow-up date must not
- * roll back money that changed hands. A missing follow-up is recoverable from
- * the follow-ups page; a lost booking is not.
+ * They used to end with a pre-filled "Next follow-up" field, so recording a
+ * check-in or a token payment quietly created a task nobody had decided on —
+ * and submitting the form twice created two. Follow-ups are now only ever
+ * written where somebody is actually answering the question: the pipeline move
+ * dialog, or a task typed by hand.
  */
-async function attachFollowUp(formData: FormData): Promise<string | null> {
-  const parsed = followUpFields.safeParse({
-    followUpAt: formData.get("followUpAt"),
-    followUpChannel: formData.get("followUpChannel") || "call",
-    followUpNote: formData.get("followUpNote"),
-    followUpCommitment: formData.get("followUpCommitment"),
-  });
-  if (!parsed.success || !parsed.data.followUpAt) return null;
 
-  const user = await requirePermission("leads:write");
-  const at = parseLocalDateTime(parsed.data.followUpAt, user.timezone);
-  if (!at) return "The follow-up time was not understood, so no next step was saved";
-
-  const leadId = String(formData.get("leadId") ?? "");
-  try {
-    await getDb().transaction(async (tx) => {
-      const result = await tx.execute(sql`
-        SELECT person_id AS "personId", owner_user_id AS "ownerUserId"
-        FROM leads WHERE org_id = ${user.orgId} AND id = ${leadId} LIMIT 1
-      `);
-      const lead = result.rows[0] as { personId: string; ownerUserId: string | null } | undefined;
-      if (!lead) throw new Error("Lead not found");
-      await insertFollowUpTask(tx, {
-        orgId: user.orgId,
-        leadId,
-        personId: lead.personId,
-        assigneeUserId: lead.ownerUserId ?? user.id,
-        context: String(formData.get("followUpContext") ?? "next step"),
-        followUp: {
-          at,
-          channel: parsed.data.followUpChannel,
-          note: parsed.data.followUpNote ?? null,
-          commitment: parsed.data.followUpCommitment ?? null,
-        },
-      });
-    });
-  } catch {
-    return "Saved, but the follow-up could not be scheduled — add it from the follow-ups page";
-  }
-  revalidatePath("/follow-ups");
-  revalidatePath("/tasks");
-  return null;
-}
-
-/**
- * The project has to exist before a visit or a booking can reference it, and
- * the board is where its absence is discovered. Setting it here is the same
- * action the lead page uses.
- */
+/** Sets the opportunity project first when the dialog collected one. */
 async function ensureProject(formData: FormData): Promise<string | null> {
   const projectId = String(formData.get("projectId") ?? "").trim();
   if (!projectId) return null;
@@ -332,8 +277,7 @@ export async function scheduleVisitFromBoard(
   if (!result.ok) return { ok: false, message: result.message };
   const stageError = await applyTargetStage(formData);
   if (stageError) return { ok: false, message: stageError };
-  const followUpWarning = await attachFollowUp(formData);
-  return { ok: true, message: followUpWarning ?? result.message ?? "Visit scheduled" };
+  return { ok: true, message: result.message ?? "Visit scheduled" };
 }
 
 export async function checkInFromBoard(
@@ -355,8 +299,7 @@ export async function checkInFromBoard(
   }
   const stageError = await applyTargetStage(formData);
   if (stageError) return { ok: false, message: stageError };
-  const followUpWarning = await attachFollowUp(formData);
-  return { ok: true, message: followUpWarning ?? "Checked in" };
+  return { ok: true, message: "Checked in" };
 }
 
 /**
@@ -373,11 +316,6 @@ export async function recordBookingFromBoard(
   _previous: StageAdvanceState,
   formData: FormData,
 ): Promise<StageAdvanceState> {
-  // Token payments still need a next step; a confirmed booking does not — the
-  // booking itself is the commitment. Skip before createBookingAction because
-  // that action redirects by throwing.
-  const confirming = formData.get("initialStatus") === "booked";
-  if (!confirming) await attachFollowUp(formData);
   try {
     await createBookingAction(formData);
   } catch (error) {

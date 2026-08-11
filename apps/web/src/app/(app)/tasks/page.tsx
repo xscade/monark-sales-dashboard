@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import Link from "next/link";
 import { can, requirePermission } from "@/lib/auth";
-import { completeTask, createTask, rescheduleTask } from "@/lib/sales-actions";
+import { completeTask, createTask } from "@/lib/sales-actions";
 import {
   canViewSalesTeam,
   canManageSalesTeam,
@@ -14,6 +14,7 @@ import {
 } from "@/lib/sales-queries";
 import { formatDateTime, maskPhoneDisplay } from "@/lib/format";
 import { Card, DataTable, EmptyState, SubmitButton, Td, Th } from "@/components/ui";
+import { TaskDueEditor } from "@/components/task-due-editor";
 
 export const dynamic = "force-dynamic";
 
@@ -290,19 +291,14 @@ export default async function TasksPage({
                             <input type="hidden" name="returnTo" value={returnTo} />
                             <SubmitButton>Complete</SubmitButton>
                           </form>
-                          <form action={rescheduleTask} className="flex items-center gap-1.5">
-                            <input type="hidden" name="taskId" value={task.id} />
-                            <input type="hidden" name="returnTo" value={returnTo} />
-                            <input
-                              type="datetime-local"
-                              name="dueAt"
-                              required
-                              defaultValue={task.dueAt ? toDateTimeLocal(task.dueAt, user.timezone) : ""}
-                              aria-label={`Reschedule ${task.subject ?? "task"}`}
-                              className="rounded-lg border border-zinc-300 bg-white px-2 py-1.5 text-xs dark:border-zinc-700 dark:bg-zinc-950"
-                            />
-                            <SubmitButton variant="secondary">Move</SubmitButton>
-                          </form>
+                          <TaskDueEditor
+                            taskId={task.id}
+                            returnTo={returnTo}
+                            defaultValue={
+                              task.dueAt ? toDateTimeLocal(task.dueAt, user.timezone) : ""
+                            }
+                            label={`Reschedule ${task.subject ?? "task"}`}
+                          />
                         </div>
                       ) : (
                         <span className="text-xs text-zinc-400">—</span>

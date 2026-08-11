@@ -57,6 +57,13 @@
       "when": 1786424600000,
       "tag": "0007_realtime_drop_db_triggers",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1786426200000,
+      "tag": "0008_backfill_self_checkin_leads_to_new",
+      "breakpoints": true
     }
   ]
 }

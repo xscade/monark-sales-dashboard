@@ -7,9 +7,10 @@ import { can, requirePermission } from "@/lib/auth";
 import { getLeadDetail, listActiveProjects, listAgents } from "@/lib/queries";
 import { assignLead, checkInVisit, logActivity, updateLeadProject } from "@/lib/actions";
 import { saveQualification } from "@/lib/qualification-actions";
+import { Button } from "@/components/ui/button";
 import { CollapsibleLogs } from "@/components/collapsible-logs";
 import { Timeline } from "@/components/timeline";
-import { groupTimeline, type TimelineEntry } from "@/lib/timeline";
+import { isNoteworthyStageChange, sortTimeline, type TimelineEntry } from "@/lib/timeline";
 import { LeadActions } from "@/components/lead-actions";
 import { StageChangeForm } from "@/components/stage-change-form";
 import { LeadCommercialPanel } from "@/components/lead-commercial-panel";
@@ -24,8 +25,8 @@ import {
 export const dynamic = "force-dynamic";
 
 /** One merged, chronological stream. Sales think in "what happened, in order",
- *  not in four separate tables. `groupTimeline` then folds the rows that
- *  describe a single moment into one entry — see lib/timeline.ts. */
+ *  not in four separate tables. Rows that only restate another row are left out
+ *  rather than shown — see lib/timeline.ts. */
 type TimelineItem = TimelineEntry;
 
 export default async function LeadDetailPage({ params }: { params: Promise<{ id: string }> }) {
@@ -50,18 +51,11 @@ export default async function LeadDetailPage({ params }: { params: Promise<{ id:
   const firstTouch = touchpoints[0];
 
   const timeline: TimelineItem[] = [
-    ...touchpoints.map((t) => ({
-      at: new Date(t.occurred_at),
-      kind: "touchpoint" as const,
-      groupKey: lead.id,
-      title: `Enquiry via ${String(t.source).replace(/_/g, " ")}`,
-      detail: [t.campaign_name, t.creative_name, t.keyword].filter(Boolean).join(" · ") || null,
-      meta: t.landing_page,
-    })),
-    ...history.map((h) => ({
+    // Only stage changes a person made and explained; the automatic ones just
+    // restate the activity sitting next to them. See isNoteworthyStageChange.
+    ...history.filter(isNoteworthyStageChange).map((h) => ({
       at: new Date(h.created_at),
       kind: "stage" as const,
-      groupKey: lead.id,
       title: h.from_stage
         ? `${stageLabel(h.from_stage)} → ${stageLabel(h.to_stage)}`
         : `Stage set to ${stageLabel(h.to_stage)}`,
@@ -73,7 +67,6 @@ export default async function LeadDetailPage({ params }: { params: Promise<{ id:
     ...assignments.map((assignment) => ({
       at: new Date(assignment.created_at),
       kind: "assignment" as const,
-      groupKey: lead.id,
       title: assignment.to_user_name ? `Assigned to ${assignment.to_user_name}` : "Lead unassigned",
       detail: assignment.reason,
       meta: [assignment.from_user_name ? `from ${assignment.from_user_name}` : null, assignment.rule]
@@ -83,7 +76,6 @@ export default async function LeadDetailPage({ params }: { params: Promise<{ id:
     ...activities.map((a) => ({
       at: new Date(a.occurred_at),
       kind: "activity" as const,
-      groupKey: a.lead_id,
       // The subject is the only part that says what actually happened; without
       // it every follow-up task and note rendered as the bare word "task".
       title: a.subject ?? (a.type === "call" ? `Call — ${a.call_outcome ?? "logged"}` : a.type),
@@ -98,7 +90,6 @@ export default async function LeadDetailPage({ params }: { params: Promise<{ id:
     ...visits.map((v) => ({
       at: new Date(v.arrived_at ?? v.scheduled_at),
       kind: "visit" as const,
-      groupKey: v.lead_id,
       title: v.arrived_at
         ? `Visited — ${String(v.type).replace(/_/g, " ")}`
         : `Visit scheduled — ${String(v.type).replace(/_/g, " ")}`,
@@ -123,9 +114,9 @@ export default async function LeadDetailPage({ params }: { params: Promise<{ id:
         .filter(Boolean)
         .join(" · ") || null,
     })),
-  ].filter((i) => !Number.isNaN(i.at.getTime()));
+  ];
 
-  const moments = groupTimeline(timeline);
+  const events = sortTimeline(timeline);
 
   return (
     <div className="space-y-5">
@@ -139,22 +130,6 @@ export default async function LeadDetailPage({ params }: { params: Promise<{ id:
             {lead.primary_phone ?? "—"}
             {lead.primary_email ? ` · ${lead.primary_email}` : ""} · {lead.reference}
           </p>
-          {/* This page is one enquiry; the person may have several. Without a
-              way across, the same buyer reads as two unrelated records
-              depending on which screen you happened to open. */}
-          {canSeeCustomer && (
-            <Link
-              href={`/customers/${lead.person_id}`}
-              className="mt-2 inline-flex items-center gap-1.5 rounded-lg border border-zinc-300 px-2.5 py-1.5 text-xs font-medium transition hover:bg-zinc-50 dark:border-zinc-700 dark:hover:bg-zinc-800"
-            >
-              <UserRound className="size-3.5" />
-              View customer
-              <span className="text-zinc-400">·</span>
-              <span className="font-normal text-zinc-500">
-                contact details and every enquiry
-              </span>
-            </Link>
-          )}
         </div>
         <div className="flex flex-col items-end gap-2">
           <div className="flex items-center gap-2">
@@ -170,21 +145,34 @@ export default async function LeadDetailPage({ params }: { params: Promise<{ id:
             </span>
           )}
           </div>
-          {writable && (
-            <LeadActions
-              leadId={lead.id}
-              leadName={lead.full_name ?? lead.reference}
-              stage={lead.stage_text}
-              compact
-            />
-          )}
+          {/* This page is one enquiry; the person may have several. Without a
+              way across, the same buyer reads as two unrelated records
+              depending on which screen you happened to open. */}
+          <div className="flex flex-wrap items-center justify-end gap-2">
+            {canSeeCustomer && (
+              <Button asChild size="sm">
+                <Link href={`/customers/${lead.person_id}`}>
+                  <UserRound />
+                  View customer
+                </Link>
+              </Button>
+            )}
+            {writable && (
+              <LeadActions
+                leadId={lead.id}
+                leadName={lead.full_name ?? lead.reference}
+                stage={lead.stage_text}
+                compact
+              />
+            )}
+          </div>
         </div>
       </div>
 
       {/* Full width and outside the balanced flow below: the log is long, and
           collapsed by default so it never buries the actionable cards. */}
-      <CollapsibleLogs count={moments.length}>
-            <Timeline entries={timeline} />
+      <CollapsibleLogs count={events.length}>
+            <Timeline entries={events} />
       </CollapsibleLogs>
 
       {/*

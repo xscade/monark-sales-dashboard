@@ -11,9 +11,10 @@ import {
   listSalesOwners,
 } from "@/lib/sales-queries";
 import { formatDate, formatDateTime, formatRelative } from "@/lib/format";
-import { groupTimeline, type TimelineEntry } from "@/lib/timeline";
+import { sortTimeline, type TimelineEntry } from "@/lib/timeline";
 import { Timeline } from "@/components/timeline";
 import { ArrowRight } from "lucide-react";
+import { Button } from "@/components/ui/button";
 import { Card, EmptyState, SourceBadge, StageBadge, SubmitButton } from "@/components/ui";
 
 export const dynamic = "force-dynamic";
@@ -46,12 +47,14 @@ export default async function CustomerDetailPage({
   const taskOpportunities = user.role === "sales_agent"
     ? activeOpportunities.filter((lead) => lead.ownerUserId === user.id)
     : activeOpportunities;
+  // The live enquiry if there is one, otherwise the most recent — the same
+  // one an agent means when they say "open Krishna".
+  const primaryOpportunity = activeOpportunities[0] ?? opportunities[0] ?? null;
   const mayWriteCustomer = can(user, "customers:write");
   const mayWriteTasks = can(user, "tasks:write");
 
   const timeline: TimelineItem[] = [
     ...activities.map((activity) => ({
-      groupKey: activity.leadReference ?? null,
       at: new Date(activity.occurredAt),
       kind: activity.type === "task" ? ("task" as const) : ("activity" as const),
       title:
@@ -70,16 +73,15 @@ export default async function CustomerDetailPage({
         .join(" · ") || null,
     })),
     ...visits.map((visit) => ({
-      groupKey: visit.leadReference ?? null,
       at: new Date(visit.arrivedAt ?? visit.scheduledAt ?? 0),
       kind: "visit" as const,
       title: `${visit.type.replace(/_/g, " ")} — ${visit.status.replace(/_/g, " ")}`,
       detail: visit.notes,
       meta: [visit.hostName, visit.leadReference].filter(Boolean).join(" · ") || null,
     })),
-  ].filter((item) => !Number.isNaN(item.at.getTime()));
+  ];
 
-  const moments = groupTimeline(timeline);
+  const events = sortTimeline(timeline);
 
   return (
     <div className="space-y-6">
@@ -121,13 +123,7 @@ export default async function CustomerDetailPage({
 
       <div className="grid gap-6 lg:grid-cols-3">
         <div className="space-y-6 lg:col-span-2">
-          {/* Each row already navigated to its enquiry, but nothing said so —
-              which is half of why the two screens felt like separate records
-              rather than two views of one person. */}
-          <Card
-            title="Opportunities"
-            subtitle={`${opportunities.length} across all projects · open one for its full history and actions`}
-          >
+          <Card title="Opportunities" subtitle={`${opportunities.length} across all projects`}>
             {opportunities.length === 0 ? (
               <EmptyState title="No opportunities" />
             ) : (
@@ -149,13 +145,7 @@ export default async function CustomerDetailPage({
                           {lead.lastActivityAt ? ` · active ${formatRelative(lead.lastActivityAt)}` : ""}
                         </p>
                       </div>
-                      <span className="flex shrink-0 items-center gap-2">
-                        <StageBadge stage={lead.stage} />
-                        <span className="hidden items-center gap-1 text-xs font-medium text-brand-600 sm:inline-flex">
-                          View enquiry
-                          <ArrowRight className="size-3.5" />
-                        </span>
-                      </span>
+                      <StageBadge stage={lead.stage} />
                     </Link>
                   </li>
                 ))}
@@ -165,17 +155,53 @@ export default async function CustomerDetailPage({
 
           <Card
             title="Timeline"
-            subtitle={`${moments.length} ${moments.length === 1 ? "event" : "events"} across every enquiry`}
+            subtitle={`${events.length} ${events.length === 1 ? "event" : "events"} across every enquiry`}
           >
             <Timeline
-              entries={timeline}
+              entries={events}
               emptyTitle="Nothing recorded yet"
               timezone={user.timezone}
             />
           </Card>
+
+          {mayWriteCustomer && (
+            <Card title="Edit customer" subtitle="Identity changes remain linked to past enquiries">
+              {/* Laid out for the full-width column it now sits in; as a
+                  narrow sidebar card this was a single stack, and stretching
+                  that to the width of the timeline would have given six very
+                  wide inputs and a lot of empty space. */}
+              <form action={updateCustomer} className="grid gap-3 p-5 sm:grid-cols-2 lg:grid-cols-3">
+                <input type="hidden" name="personId" value={customer.id} />
+                <label className="grid gap-1"><span className="text-xs text-zinc-500">Full name</span><input name="fullName" defaultValue={customer.fullName ?? ""} maxLength={160} className="rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm outline-none focus:border-brand-500 dark:border-zinc-700 dark:bg-zinc-950" /></label>
+                <label className="grid gap-1"><span className="text-xs text-zinc-500">Phone</span><input name="primaryPhone" type="tel" defaultValue={customer.primaryPhone ?? ""} className="rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm outline-none focus:border-brand-500 dark:border-zinc-700 dark:bg-zinc-950" /></label>
+                <label className="grid gap-1"><span className="text-xs text-zinc-500">Email</span><input name="primaryEmail" type="email" defaultValue={customer.primaryEmail ?? ""} className="rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm outline-none focus:border-brand-500 dark:border-zinc-700 dark:bg-zinc-950" /></label>
+                <label className="grid gap-1"><span className="text-xs text-zinc-500">City</span><input name="city" defaultValue={customer.city ?? ""} className="rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm outline-none focus:border-brand-500 dark:border-zinc-700 dark:bg-zinc-950" /></label>
+                <label className="grid gap-1"><span className="text-xs text-zinc-500">State</span><input name="state" defaultValue={customer.state ?? ""} className="rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm outline-none focus:border-brand-500 dark:border-zinc-700 dark:bg-zinc-950" /></label>
+                <label className="grid gap-1"><span className="text-xs text-zinc-500">Postal code</span><input name="postalCode" defaultValue={customer.postalCode ?? ""} className="rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm outline-none focus:border-brand-500 dark:border-zinc-700 dark:bg-zinc-950" /></label>
+                <label className="grid gap-1"><span className="text-xs text-zinc-500">Language</span><input name="preferredLanguage" defaultValue={customer.preferredLanguage ?? ""} className="rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm outline-none focus:border-brand-500 dark:border-zinc-700 dark:bg-zinc-950" /></label>
+                <label className="flex items-center gap-2 self-end pb-2 text-sm"><input type="checkbox" name="isNri" defaultChecked={customer.isNri} className="size-4 accent-brand-600" />NRI customer</label>
+                <div className="flex items-end justify-end sm:col-span-2 lg:col-span-1">
+                  <SubmitButton variant="secondary">Save customer</SubmitButton>
+                </div>
+              </form>
+            </Card>
+          )}
         </div>
 
         <div className="space-y-6">
+          {/* The enquiry is where the selling happens — stage, follow-ups,
+              shortlist. This page is the person behind it, so the way across
+              is a control in its own right rather than a row you must guess
+              is clickable. */}
+          {primaryOpportunity && (
+            <Button asChild className="w-full">
+              <Link href={`/leads/${primaryOpportunity.id}`}>
+                <ArrowRight />
+                View enquiry
+              </Link>
+            </Button>
+          )}
+
           <Card title="Customer details">
             <dl className="space-y-3 px-5 py-4 text-sm">
               <DetailRow label="Phone">{customer.primaryPhone ?? "—"}</DetailRow>
@@ -190,27 +216,6 @@ export default async function CustomerDetailPage({
               )}
             </dl>
           </Card>
-
-          {mayWriteCustomer && (
-            <Card title="Edit customer" subtitle="Identity changes remain linked to past enquiries">
-              <form action={updateCustomer} className="grid gap-3 p-5">
-                <input type="hidden" name="personId" value={customer.id} />
-                <label className="grid gap-1"><span className="text-xs text-zinc-500">Full name</span><input name="fullName" defaultValue={customer.fullName ?? ""} maxLength={160} className="rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-950" /></label>
-                <label className="grid gap-1"><span className="text-xs text-zinc-500">Phone</span><input name="primaryPhone" type="tel" defaultValue={customer.primaryPhone ?? ""} className="rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-950" /></label>
-                <label className="grid gap-1"><span className="text-xs text-zinc-500">Email</span><input name="primaryEmail" type="email" defaultValue={customer.primaryEmail ?? ""} className="rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-950" /></label>
-                <div className="grid grid-cols-2 gap-2">
-                  <label className="grid gap-1"><span className="text-xs text-zinc-500">City</span><input name="city" defaultValue={customer.city ?? ""} className="rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-950" /></label>
-                  <label className="grid gap-1"><span className="text-xs text-zinc-500">State</span><input name="state" defaultValue={customer.state ?? ""} className="rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-950" /></label>
-                </div>
-                <div className="grid grid-cols-2 gap-2">
-                  <label className="grid gap-1"><span className="text-xs text-zinc-500">Postal code</span><input name="postalCode" defaultValue={customer.postalCode ?? ""} className="rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-950" /></label>
-                  <label className="grid gap-1"><span className="text-xs text-zinc-500">Language</span><input name="preferredLanguage" defaultValue={customer.preferredLanguage ?? ""} className="rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-950" /></label>
-                </div>
-                <label className="flex items-center gap-2 text-sm"><input type="checkbox" name="isNri" defaultChecked={customer.isNri} className="size-4 accent-brand-600" />NRI customer</label>
-                <SubmitButton variant="secondary" className="w-full">Save customer</SubmitButton>
-              </form>
-            </Card>
-          )}
 
           {mayWriteCustomer && (
             <Card title="Contact controls" subtitle="Suppression also blocks outbound conversion delivery">

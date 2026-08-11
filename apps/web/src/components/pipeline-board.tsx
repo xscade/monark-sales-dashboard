@@ -783,7 +783,7 @@ function StageMoveDialog({
             {/* Section title sits above field chrome on purpose: a dense move
                 dialog reads as one wall of inputs unless the next step is
                 announced at a size the eye can latch onto. */}
-            <h3 className="text-base font-semibold tracking-tight text-zinc-900 dark:text-zinc-50">
+            <h3 className="text-base font-semibold tracking-tight text-brand-600 dark:text-brand-400">
               Next follow-up
             </h3>
             <p className="mt-1.5 text-sm leading-snug text-zinc-500">

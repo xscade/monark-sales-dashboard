@@ -259,7 +259,7 @@ function NextFollowUp({ context, offsetHours = 24 }: { context: string; offsetHo
   return (
     <div className="mt-6 border-t border-zinc-200 pt-5 dark:border-zinc-800">
       <input type="hidden" name="followUpContext" value={context} />
-      <h3 className="text-base font-semibold tracking-tight text-zinc-900 dark:text-zinc-50">
+      <h3 className="text-base font-semibold tracking-tight text-brand-600 dark:text-brand-400">
         Next follow-up
       </h3>
       <p className="mt-1.5 text-sm leading-snug text-zinc-500">
